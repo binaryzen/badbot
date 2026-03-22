@@ -6,13 +6,21 @@ corresponds to a named step. The engine advances through states by executing
 the step's HTTP request, extracting context values, checking for findings, and
 triggering the FSM transition.
 
-The only place raw context values are resolved is _resolve(), which is called
-solely at message construction time (URL, headers, body interpolation).
+The only place raw context values are resolved is _resolve_value(), which is
+called solely at HTTP message construction time (URL, headers, body).
+
+Extensions over the initial POC:
+  - ExtractionDef.transform — post-processing applied to the extracted value
+    before storing. Currently supports: jwt_decode.
+  - StepDef.body_format — "json" (default) or "form" for OAuth endpoints.
+  - Dot-notation in templates — {ctx:claims.sub} navigates into stored dicts.
 """
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
+import jwt as pyjwt
 from jsonpath_ng import parse as jsonpath_parse
 from transitions import Machine, MachineError
 
@@ -26,8 +34,9 @@ from .session import Finding, LogEntry, Session
 
 @dataclass
 class ExtractionDef:
-    field: str    # jsonpath expression e.g. "$.token"
-    into: str     # context store key e.g. "auth_token"
+    field: str              # jsonpath expression e.g. "$.token"
+    into: str               # context store key e.g. "auth_token"
+    transform: str | None = None  # optional post-processing: "jwt_decode"
 
 
 @dataclass
@@ -44,6 +53,7 @@ class StepDef:
     path: str
     headers: dict[str, str] = field(default_factory=dict)
     body: dict | None = None
+    body_format: str = "json"   # "json" or "form"
     extract: list[ExtractionDef] = field(default_factory=list)
     expect_status: int | None = None
     finding_on_unexpected: FindingDef | None = None
@@ -101,20 +111,47 @@ class SequenceEngine:
     # Template resolution — the only place raw context values are read
     # ------------------------------------------------------------------
 
-    def _resolve(self, template: str) -> str:
+    def _resolve_value(self, key: str) -> str:
         """
-        Replaces {ctx:key} placeholders with raw values from the context store.
+        Resolves a context key, supporting dot-notation for stored dicts.
+        e.g. "claims.sub" → context["claims"]["sub"]
         Called only at HTTP message construction time.
         """
+        parts = key.split(".", 1)
+        base_key = parts[0]
+        ref = self.session.context.ref(base_key)
+        value: Any = self.session.context.value(ref)
+
+        if len(parts) > 1:
+            for part in parts[1].split("."):
+                if not isinstance(value, dict):
+                    raise KeyError(f"Cannot navigate into non-dict at '{part}' in key '{key}'")
+                value = value[part]
+
+        return str(value)
+
+    def _resolve(self, template: str) -> str:
+        """Replaces {ctx:key} and {ctx:key.field} placeholders."""
         def replacer(match: re.Match) -> str:
-            key = match.group(1)
-            ref = self.session.context.ref(key)
-            return str(self.session.context.value(ref))
+            return self._resolve_value(match.group(1))
 
         return re.sub(r"\{ctx:([^}]+)\}", replacer, template)
 
     def _resolve_dict(self, d: dict) -> dict:
         return {k: self._resolve(str(v)) for k, v in d.items()}
+
+    # ------------------------------------------------------------------
+    # Extraction transforms
+    # ------------------------------------------------------------------
+
+    def _apply_transform(self, value: Any, transform: str) -> Any:
+        if transform == "jwt_decode":
+            return pyjwt.decode(
+                value,
+                options={"verify_signature": False},
+                algorithms=["HS256"],
+            )
+        raise ValueError(f"Unknown transform: {transform!r}")
 
     # ------------------------------------------------------------------
     # Execution loop
@@ -140,12 +177,13 @@ class SequenceEngine:
         # Send request
         try:
             with httpx.Client() as client:
-                response = client.request(
-                    method=step.method,
-                    url=url,
-                    headers=headers,
-                    json=body,
-                )
+                kwargs: dict = {"method": step.method, "url": url, "headers": headers}
+                if body is not None:
+                    if step.body_format == "form":
+                        kwargs["data"] = body
+                    else:
+                        kwargs["json"] = body
+                response = client.request(**kwargs)
         except httpx.RequestError as exc:
             self._log("REQUEST", f"Request error: {exc}", step=step.name)
             self.fail()
@@ -158,7 +196,7 @@ class SequenceEngine:
             data={"status_code": response.status_code},
         )
 
-        # Context extraction (response body values → context store)
+        # Context extraction
         if response.is_success and step.extract:
             try:
                 body_json = response.json()
@@ -168,11 +206,7 @@ class SequenceEngine:
             for ext in step.extract:
                 expr = jsonpath_parse(ext.field)
                 matches = expr.find(body_json)
-                if matches:
-                    self.session.context.store(ext.into, matches[0].value)
-                    # Log the key, never the value
-                    self._log("EXTRACTION", f"Stored '{ext.into}'", step=step.name)
-                else:
+                if not matches:
                     self._log(
                         "EXTRACTION",
                         f"Extraction failed: '{ext.field}' not found in response",
@@ -181,14 +215,41 @@ class SequenceEngine:
                     self.fail()
                     return
 
+                value = matches[0].value
+                if ext.transform:
+                    try:
+                        value = self._apply_transform(value, ext.transform)
+                        self._log(
+                            "EXTRACTION",
+                            f"Stored '{ext.into}' (transform: {ext.transform})",
+                            step=step.name,
+                        )
+                    except Exception as exc:
+                        self._log(
+                            "EXTRACTION",
+                            f"Transform '{ext.transform}' failed for '{ext.into}': {exc}",
+                            step=step.name,
+                        )
+                        self.fail()
+                        return
+                else:
+                    self._log("EXTRACTION", f"Stored '{ext.into}'", step=step.name)
+
+                self.session.context.store(ext.into, value)
+
         # Finding check
         if step.expect_status is not None and response.status_code != step.expect_status:
             if step.finding_on_unexpected:
                 fd = step.finding_on_unexpected
+                # NOTE: resolving templates in finding text embeds raw context
+                # values into the finding string. In the full implementation
+                # this is replaced by MessageRef — findings carry opaque
+                # references resolved only at render time. Acceptable in the
+                # POC for non-sensitive claim values.
                 self.session.add_finding(Finding(
                     severity=fd.severity,
-                    summary=fd.summary,
-                    detail=fd.detail,
+                    summary=self._resolve(fd.summary),
+                    detail=self._resolve(fd.detail),
                     step=step.name,
                     state=self.state,
                 ))

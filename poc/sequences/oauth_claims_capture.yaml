@@ -1,0 +1,49 @@
+name: oauth_claims_capture
+description: >
+  Authenticate via OAuth client credentials grant. Decode the JWT to capture
+  the full claims table as a structured context value. Use a claim field
+  (sub) as a request parameter in a subsequent step. Probe an admin endpoint
+  with a reader-scoped token — the server validates the token but does not
+  enforce role requirements, so the probe succeeds when it should be rejected.
+
+steps:
+  - name: authenticate
+    method: POST
+    path: /oauth/token
+    body_format: form
+    body:
+      grant_type: client_credentials
+      client_id: client_app
+      client_secret: client_secret_123
+      scope: "read:orders read:profile"
+    extract:
+      - field: "$.access_token"
+        into: access_token
+      - field: "$.access_token"
+        into: claims
+        transform: jwt_decode
+    expect_status: 200
+    on_success: access_orders
+
+  - name: access_orders
+    method: GET
+    path: /api/orders
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+      X-Client-ID: "{ctx:claims.sub}"
+    expect_status: 200
+    on_success: probe_admin
+
+  - name: probe_admin
+    method: GET
+    path: /api/admin
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    expect_status: 403
+    finding_on_unexpected:
+      severity: HIGH
+      summary: "Privilege escalation: admin endpoint accessible without admin role"
+      detail: >
+        Token issued to '{ctx:claims.sub}' with scope '{ctx:claims.scope}' and
+        roles {ctx:claims.roles} was accepted by /api/admin. The endpoint
+        validates token authenticity but does not enforce role requirements.

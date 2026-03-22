@@ -22,7 +22,7 @@ def load_sequence(path: str) -> SequenceDef:
     steps = []
     for s in data["steps"]:
         extractions = [
-            ExtractionDef(field=e["field"], into=e["into"])
+            ExtractionDef(field=e["field"], into=e["into"], transform=e.get("transform"))
             for e in s.get("extract", [])
         ]
 
@@ -39,6 +39,7 @@ def load_sequence(path: str) -> SequenceDef:
             path=s["path"],
             headers=s.get("headers", {}),
             body=s.get("body"),
+            body_format=s.get("body_format", "json"),
             extract=extractions,
             expect_status=s.get("expect_status"),
             finding_on_unexpected=finding_def,
