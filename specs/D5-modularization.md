@@ -61,7 +61,7 @@ urn:badbot:{namespace}:{resource-type}:{id}
 
 **Registries:** C-01 (Message Registry) is the reference implementation. The same registration pattern — `register(urn, value, schema?)` — applies to any resource type that needs runtime lookup. Additional registries (e.g. for source types or constants) follow the same interface shape.
 
-**Schema references:** Any URN may carry an optional `schema_ref` pointing to a registered param schema for that URN, enabling build-time and test-time validation of resource instantiation. First applied to `MessageRef`; applicable to any parameterized resource type.
+**Schema ownership:** For parameterized resource types, the registry owns the param schema — co-located with the template at registration time. Producers emit a URN and params; the registry validates the contract when resolving. This is a translation concern: schemas define what a template requires, not what a producer must enforce. Applies uniformly to any resource type that uses a registry pattern.
 
 **Extensibility:** New resource types are added by declaring a new segment value. No API changes required in existing registries or components. Plugin-contributed resource types follow the same pattern under the plugin namespace.
 
@@ -76,13 +76,12 @@ Named types that cross component boundaries. Defined here to prevent interface a
 ### MessageRef
 ```
 MessageRef
-  urn:        str             # e.g. "urn:badbot:c07:context_extraction_failed"
-  params:     dict            # typed parameters consumed by the template at render time
-  schema_ref: URNSchemaRef?   # optional — when present, params validated against registered schema at build/test time
+  urn:    str   # e.g. "urn:badbot:c07:msg:context_extraction_failed"
+  params: dict  # facts about the event; shape is a concern of the template, not the producer
 ```
 Emitted by all core components (C-02 through C-10) in place of constructed IMessage objects. Resolved to IMessage only at the boundary layer (C-11, C-13, C-14) via `C-01.resolve()`. `MessageRef` is a zero-dependency primitive — no C-01 import required to produce one.
 
-**URN schema validation:** When `schema_ref` is present, the registered URN schema defines the expected param keys and types. Validation can be run at build time or test time against the registry to catch param contract violations before runtime. Schemas are registered by core components at initialization and by plugins during onboarding via C-12.
+**Schema ownership:** The registry owns the param contract. When a URN is registered via `C-01.register(urn, template, schema?)`, the schema is co-located with the template. `C-01.validate(ref)` looks up the schema by URN internally — producers carry no schema reference and need not know schemas exist. This is a translation concern: the schema defines what the template requires to render correctly, not what the event producer is responsible for enforcing.
 
 ### Finding
 ```

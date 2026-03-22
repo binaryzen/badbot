@@ -510,20 +510,19 @@ All named resources use `urn:badbot:{namespace}:{resource-type}:{id}`.
 | Configuration keys | `cfg` | `urn:badbot:c10:cfg:autosave_interval` |
 | Constants | `const` | `urn:badbot:plugin:http-rest:const:default_timeout` |
 
-`MessageRef` (defined below) is the canonical reference implementation. Any URN may carry an optional `schema_ref` pointing to a registered param schema, enabling build-time and test-time validation. `ContextRef`, `StepRef`, `RegistryID`, and `SourceConfig` keys align to URN addressing progressively as interfaces stabilize. See CON-10.
+`MessageRef` (defined below) is the canonical reference implementation. For parameterized resource types, schemas are owned by the registry — co-located with templates at registration, not carried on the reference. `ContextRef`, `StepRef`, `RegistryID`, and `SourceConfig` keys align to URN addressing progressively as interfaces stabilize. See CON-10.
 
 ### 8.3 Shared Data Types
 
 ##### MessageRef
 ```
 MessageRef
-  urn:        str             # e.g. "urn:badbot:c07:context_extraction_failed"
-  params:     dict            # typed parameters consumed by the template at render time
-  schema_ref: URNSchemaRef?   # optional — when present, params validated against registered schema at build/test time
+  urn:    str   # e.g. "urn:badbot:c07:msg:context_extraction_failed"
+  params: dict  # facts about the event; shape is a concern of the template, not the producer
 ```
 Emitted by all core components (C-02 through C-10) in place of constructed IMessage objects. Resolved to IMessage only at the boundary layer (C-11, C-13, C-14) via `C-01.resolve()`. Zero-dependency primitive — no C-01 import required to produce one.
 
-**URN schema validation:** When `schema_ref` is present, the registered URN schema defines the expected param keys and types. Validation can be run at build or test time against the registry to catch param contract violations before runtime. Schemas are registered by core components at initialization and by plugins during onboarding via C-12.
+**Schema ownership:** The registry owns the param contract. Schemas are registered alongside templates via `C-01.register(urn, template, schema?)` and looked up internally by `C-01.validate(ref)`. Producers carry no schema reference and need not know schemas exist — this is a translation concern between raw params and rendered output, owned entirely by the registry.
 
 ### Finding
 ```
