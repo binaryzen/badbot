@@ -451,6 +451,14 @@ Each FR is tagged with the use case(s) it supports.
 **Known gap:** FR-021 and FR-023 (interactive field selection in visualization) require richer UI than CLI provides. Resolved when UI ships.
 **Tradeoff accepted:** Architectural cleanliness vs. earlier delivery of rich interactive experience.
 
+### CON-10 — URN-Style Resource Addressing
+**Decision:** All named resources in the system — message templates, context store keys, protocol definitions, sequence and step identifiers, source types, configuration keys, and plugin-contributed constants and parameters — shall be addressed using `urn:badbot:{namespace}:{resource-type}:{id}`. Core components use `urn:badbot:c{nn}:…`; plugins use `urn:badbot:plugin:{name}:…`.
+**Rationale:** Namespace isolation (plugins cannot collide with core or each other), registry-based discoverability, and uniform extensibility — new resource types added by declaring a new segment value with no API changes. `MessageRef` URNs are the canonical reference implementation; this constraint formalizes the pattern as system-wide.
+**Cost:** More verbose than bare string keys; contributors must understand namespace structure.
+**Tradeoff:** Consistency, namespace safety, and extensibility vs. verbosity. Accepted because namespace collision between core and plugins would be silent and difficult to diagnose — structural prevention is the appropriate standard for a pluggable system.
+
+---
+
 ### CON-09 — HTTP/REST as the First Protocol
 **Decision:** HTTP/REST plugin is the first and only bundled protocol. Binary protocol support deferred until after plugin model validates.
 **Rationale:** OSS landscape is overwhelmingly HTTP-oriented; maximizes leverage; addresses S-01 through S-07.
@@ -481,7 +489,30 @@ Each FR is tagged with the use case(s) it supports.
 | C-14 | CLI Layer | Argument parsing; command routing; output formatting; exit codes | FR-060, FR-062, FR-073 |
 | U-01 | NetworkClient (utility) | Shared outbound HTTP/S client with enforced TLS validation | FR-077 |
 
-### 8.2 Shared Data Types
+### 8.2 URN Addressing Scheme
+
+All named resources use `urn:badbot:{namespace}:{resource-type}:{id}`.
+
+| Namespace | Scope |
+|---|---|
+| `urn:badbot:c{nn}:…` | Core component resources (c01–c14) |
+| `urn:badbot:u01:…` | Shared utility resources |
+| `urn:badbot:plugin:{name}:…` | Plugin-contributed resources |
+
+| Resource Type | Segment | Example |
+|---|---|---|
+| Message templates | `msg` | `urn:badbot:c07:msg:context_extraction_failed` |
+| Context store keys | `ctx` | `urn:badbot:c07:ctx:auth_token` |
+| Protocol definitions | `proto` | `urn:badbot:plugin:http-rest:proto:http1` |
+| Sequence identifiers | `seq` | `urn:badbot:plugin:http-rest:seq:bola_probe` |
+| Sequence step references | `step` | `urn:badbot:plugin:http-rest:seq:bola_probe:step:extract_id` |
+| Source/provider types | `src` | `urn:badbot:c05:src:mutation` |
+| Configuration keys | `cfg` | `urn:badbot:c10:cfg:autosave_interval` |
+| Constants | `const` | `urn:badbot:plugin:http-rest:const:default_timeout` |
+
+`MessageRef` (defined below) is the canonical reference implementation. Any URN may carry an optional `schema_ref` pointing to a registered param schema, enabling build-time and test-time validation. `ContextRef`, `StepRef`, `RegistryID`, and `SourceConfig` keys align to URN addressing progressively as interfaces stabilize. See CON-10.
+
+### 8.3 Shared Data Types
 
 ##### MessageRef
 ```
@@ -532,7 +563,7 @@ ExecutionResult
 ```
 *Returned by C-07. Caller (C-09 or C-13) writes log entries and findings to C-10.*
 
-### 8.3 Interfaces
+### 8.4 Interfaces
 
 #### C-01 — IMessageRegistry
 ```
@@ -676,7 +707,7 @@ post(url, body, headers?) → Response
 ```
 All outbound HTTP/S calls from C-04 (registry lookups) and C-12 (plugin downloads) route through this utility. TLS certificate validation is enforced unconditionally — connections with invalid or untrusted certificates are refused and raise a typed error.
 
-### 8.4 Dependency Graph
+### 8.5 Dependency Graph
 
 ```
 C-14 CLI Layer

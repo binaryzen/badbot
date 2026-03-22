@@ -24,6 +24,51 @@ Fourteen components plus one shared utility. Organized from infrastructure outwa
 
 ---
 
+## URN Addressing Scheme
+
+All named resources in the system use a URN-style addressing scheme. MessageRef (defined below) is the first concrete application of this pattern; the scheme applies uniformly across every resource type.
+
+### Format
+
+```
+urn:badbot:{namespace}:{resource-type}:{id}
+```
+
+### Namespaces
+
+| Namespace | Scope |
+|---|---|
+| `urn:badbot:c{nn}:…` | Core component resources (c01–c14) |
+| `urn:badbot:u01:…` | Shared utility resources |
+| `urn:badbot:plugin:{name}:…` | Plugin-contributed resources |
+
+### Resource Types
+
+| Resource Type | Segment | Examples |
+|---|---|---|
+| Message templates | `msg` | `urn:badbot:c07:msg:context_extraction_failed` |
+| Context store keys | `ctx` | `urn:badbot:c07:ctx:auth_token` |
+| Protocol definitions | `proto` | `urn:badbot:plugin:http-rest:proto:http1` |
+| Sequence identifiers | `seq` | `urn:badbot:plugin:http-rest:seq:bola_probe` |
+| Sequence step references | `step` | `urn:badbot:plugin:http-rest:seq:bola_probe:step:extract_id` |
+| Source/provider types | `src` | `urn:badbot:c05:src:mutation` |
+| Configuration keys | `cfg` | `urn:badbot:c10:cfg:autosave_interval` |
+| Constants | `const` | `urn:badbot:plugin:http-rest:const:default_timeout` |
+
+### Properties
+
+**Namespace isolation:** Plugin URNs are scoped under `urn:badbot:plugin:{name}:*`. A plugin cannot produce a URN that collides with a core component or another plugin without declaring an intentional override in its manifest.
+
+**Registries:** C-01 (Message Registry) is the reference implementation. The same registration pattern — `register(urn, value, schema?)` — applies to any resource type that needs runtime lookup. Additional registries (e.g. for source types or constants) follow the same interface shape.
+
+**Schema references:** Any URN may carry an optional `schema_ref` pointing to a registered param schema for that URN, enabling build-time and test-time validation of resource instantiation. First applied to `MessageRef`; applicable to any parameterized resource type.
+
+**Extensibility:** New resource types are added by declaring a new segment value. No API changes required in existing registries or components. Plugin-contributed resource types follow the same pattern under the plugin namespace.
+
+**Existing type alignment:** `ContextRef`, `StepRef`, `RegistryID`, and `SourceConfig` keys are progressively aligned to URN addressing as interfaces stabilize. The `MessageRef` URN scheme is the canonical reference implementation.
+
+---
+
 ## Shared Data Types
 
 Named types that cross component boundaries. Defined here to prevent interface ambiguity.

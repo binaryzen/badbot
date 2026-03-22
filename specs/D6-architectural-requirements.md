@@ -148,6 +148,18 @@ Each constraint states the decision, its rationale, its cost, and the tradeoff a
 
 ---
 
+### CON-10 — URN-Style Resource Addressing
+
+**Decision:** All named resources in the system — message templates, context store keys, protocol definitions, sequence and step identifiers, source types, configuration keys, and plugin-contributed constants and parameters — shall be addressed using a URN-style scheme: `urn:badbot:{namespace}:{resource-type}:{id}`. Core components use `urn:badbot:c{nn}:…`; plugins use `urn:badbot:plugin:{name}:…`.
+
+**Rationale:** A consistent addressing scheme across all resource types provides three properties simultaneously: namespace isolation (plugins cannot accidentally collide with core URNs or each other's URNs), registry-based discoverability and validation (any URN can be looked up or validated against a registered schema), and uniform extensibility (new resource types are added by declaring a new segment value with no API changes). The `MessageRef` URN scheme introduced in D5 is the canonical reference implementation — this constraint formalizes it as system-wide standard rather than a one-off pattern.
+
+**Cost:** More verbose than bare string keys. Contributors must understand the namespace structure. URN parsing adds negligible runtime overhead.
+
+**Tradeoff:** Consistency, namespace safety, and extensibility vs. verbosity and contributor cognitive overhead. Accepted because namespace collision between core and plugins, or between plugins, would be silent and difficult to diagnose in a pluggable system — structural prevention is the appropriate standard.
+
+---
+
 ## Constraint / FR Consistency Check
 
 | Constraint | Potentially Conflicting FRs | Resolution |
@@ -165,7 +177,7 @@ Each constraint states the decision, its rationale, its cost, and the tradeoff a
 | Category | Count |
 |---|---|
 | Architectural Requirements | 13 (AR-001–AR-013) |
-| Constraints | 9 (CON-01–CON-09) |
-| Tradeoffs named | 9 (one per constraint) |
+| Constraints | 10 (CON-01–CON-10) |
+| Tradeoffs named | 10 (one per constraint) |
 | Constraint/FR conflicts checked | 5 — all resolved or explicitly accepted |
 | Open items resolved from D3 | 1 (FR-030 vs FR-034 plugin timing) |
