@@ -6,7 +6,7 @@ Fourteen components plus one shared utility. Organized from infrastructure outwa
 
 | ID | Component | Primary Responsibility | Covers (FRs) |
 |---|---|---|---|
-| C-01 | Message Content Model | Structured multi-level messages for all user-facing output | FR-070, FR-071, FR-072, FR-073 |
+| C-01 | Message Registry | URN-to-IMessage template mapping; param schema validation; resolution at boundary layer only | FR-070, FR-071, FR-072, FR-073 |
 | C-02 | Context Store | Typed reference store; redaction enforcement; sensitive value lifecycle | FR-004, FR-038, FR-039, FR-074, FR-075 |
 | C-03 | Protocol Definition Engine | Parse, validate, build protocol messages; binary and REST backends | FR-010, FR-011, FR-015, FR-016, FR-017, FR-018, FR-023, FR-067 |
 | C-04 | Protocol Registry | Catalog of loaded definitions; versioning; discovery suggestions | FR-012, FR-013, FR-014, FR-068 |
@@ -28,16 +28,27 @@ Fourteen components plus one shared utility. Organized from infrastructure outwa
 
 Named types that cross component boundaries. Defined here to prevent interface ambiguity.
 
+### MessageRef
+```
+MessageRef
+  urn:        str             # e.g. "urn:badbot:c07:context_extraction_failed"
+  params:     dict            # typed parameters consumed by the template at render time
+  schema_ref: URNSchemaRef?   # optional — when present, params validated against registered schema at build/test time
+```
+Emitted by all core components (C-02 through C-10) in place of constructed IMessage objects. Resolved to IMessage only at the boundary layer (C-11, C-13, C-14) via `C-01.resolve()`. `MessageRef` is a zero-dependency primitive — no C-01 import required to produce one.
+
+**URN schema validation:** When `schema_ref` is present, the registered URN schema defines the expected param keys and types. Validation can be run at build time or test time against the registry to catch param contract violations before runtime. Schemas are registered by core components at initialization and by plugins during onboarding via C-12.
+
 ### Finding
 ```
 Finding
   id:               UUID
-  severity:         Severity  # CRITICAL | HIGH | MEDIUM | LOW | INFO
-  message:          IMessage  # summary + detail levels per C-01
+  severity:         Severity   # CRITICAL | HIGH | MEDIUM | LOW | INFO
+  message:          MessageRef # resolved to IMessage at render time by C-11 or C-13
   sequence_step:    StepRef
   state:            StateName
   protocol_context: ParseResult
-  evidence_ref:     ContextRef   # opaque reference — raw value stays in C-02
+  evidence_ref:     ContextRef # opaque reference — raw value stays in C-02
   timestamp:        datetime
 ```
 Produced by C-07 (Sequence Engine) and C-08 (Proxy Engine). Consumed by C-11 (Report Generator) and C-10 (Session Manager for persistence).
@@ -47,9 +58,9 @@ Produced by C-07 (Sequence Engine) and C-08 (Proxy Engine). Consumed by C-11 (Re
 LogEntry
   id:          UUID
   timestamp:   datetime
-  kind:        LogKind  # TRANSITION | PARSE_FAILURE | TIMEOUT | EXTRACTION | EXCHANGE | FINDING
-  message:     IMessage
-  context_ref: ContextRef?   # optional reference to associated context value
+  kind:        LogKind     # TRANSITION | PARSE_FAILURE | TIMEOUT | EXTRACTION | EXCHANGE | FINDING
+  message:     MessageRef  # resolved to IMessage at render time
+  context_ref: ContextRef? # optional reference to associated context value
   step_ref:    StepRef?
   state:       StateName?
 ```
@@ -70,16 +81,24 @@ Returned by C-07. Caller (C-09 or C-13) writes log entries and findings to C-10.
 
 ## Interface Definitions
 
-### C-01 — IMessage
+### C-01 — IMessageRegistry
+```
+register(urn: str, template: MessageTemplate, schema?: URNSchema)
+resolve(ref: MessageRef) → IMessage
+render(ref: MessageRef, verbosity: Verbosity) → str
+validate(ref: MessageRef) → ValidationResult   # checks params against schema if registered
+```
+*Covers: FR-070, FR-071, FR-072, FR-073*
+
+**IMessage** (rendered output type — consumed only at C-11, C-13, C-14):
 ```
 summary:    str    # plain-language, always present
 detail:     str    # technically precise, always present
 structured: dict   # machine-readable fields
 render(verbosity: Verbosity) → str
 ```
-*Covers: FR-070, FR-071, FR-072, FR-073*
 
-All user-facing output in every component is an IMessage. No component emits raw strings to the user. Plugin-contributed messages implement the same interface.
+Core components (C-02 through C-10) emit `MessageRef` primitives — they do not import or depend on C-01. C-01 is a dependency only of the boundary layer: C-11 (resolves at report generation), C-12 (registers URN schemas during plugin onboarding), C-13 (resolves for library consumers), and C-14 (renders for CLI). No component emits raw strings to the user — all messages are `MessageRef` objects resolved through the registry.
 
 ---
 
@@ -209,7 +228,7 @@ generate(session: Session) → Report
 ```
 *Covers: FR-056, FR-057, FR-058, FR-059, FR-061*
 
-`Report` contains `List[Finding]`, each as a structured `Finding` type with `IMessage` at summary/detail levels, protocol context, and a `ContextRef` to raw evidence. C-11 reads findings from the session log — it never calls `C-02.value()`.
+`Report` contains `List[Finding]`, each with a `MessageRef` resolved to `IMessage` via `C-01.resolve()` at report generation time. C-11 depends on C-01 for this resolution — it is one of the four boundary-layer consumers. C-11 reads findings from the session log — it never calls `C-02.value()`.
 
 ---
 
@@ -218,11 +237,12 @@ generate(session: Session) → Report
 load(path: PluginPath) → Plugin
 validate(plugin: Plugin) → ValidationResult
 onboard(plugin: Plugin) → OnboardedPlugin    # triggers LLM description generation; FR-057a
+                                              # registers plugin URN schemas with C-01
 sandbox(plugin: Plugin) → SandboxedPlugin
 ```
 *Covers: FR-034, FR-072, FR-078, FR-079*
 
-Outbound plugin download calls route through U-01 (NetworkClient) for TLS enforcement (FR-077).
+C-12 depends on C-01 for URN schema registration during `onboard()` — plugins declare their message URNs and param schemas, which C-12 registers with the Message Registry. This is a write-only dependency (registration only; C-12 never calls `resolve()` or `render()`). Outbound plugin download calls route through U-01 (NetworkClient) for TLS enforcement (FR-077).
 
 ---
 
@@ -268,53 +288,46 @@ All outbound HTTP/S calls from C-04 (registry lookups) and C-12 (plugin download
 ```
 C-14 CLI Layer
   └→ C-13 Library API
+        ├→ C-01 Message Registry          ← resolve/render; boundary layer only
         ├→ C-10 Session Manager
-        │     ├→ C-02 Context Store
-        │     │     └→ C-01 Message Content Model
-        │     └→ C-01 Message Content Model
+        │     └→ C-02 Context Store
         ├→ C-04 Protocol Registry
         │     ├→ C-03 Protocol Definition Engine
         │     │     ├→ [Construct OSS]
-        │     │     ├→ [OpenAPI parsers OSS]
-        │     │     └→ C-01 Message Content Model
+        │     │     └→ [OpenAPI parsers OSS]
         │     ├→ C-12 Plugin Manager
-        │     │     ├→ [U-01 NetworkClient]
-        │     │     └→ C-01 Message Content Model
+        │     │     ├→ C-01 Message Registry   ← register URN schemas at onboarding only
+        │     │     └→ [U-01 NetworkClient]
         │     └→ [U-01 NetworkClient]
         ├→ C-06 Buffer Renderer
         │     ├→ C-03 Protocol Definition Engine
-        │     ├→ [tshark subprocess]
-        │     └→ C-01 Message Content Model
+        │     └→ [tshark subprocess]
         ├→ C-07 Sequence Engine
         │     ├→ C-03 Protocol Definition Engine
         │     ├→ C-05 Provider/Source Framework
         │     │     ├→ C-03 Protocol Definition Engine
         │     │     ├→ [Boofuzz primitives OSS]
-        │     │     ├→ [Hypothesis OSS]
-        │     │     └→ C-01 Message Content Model
+        │     │     └→ [Hypothesis OSS]
         │     ├→ C-02 Context Store
-        │     ├→ [transitions OSS]
-        │     └→ C-01 Message Content Model
+        │     └→ [transitions OSS]
         ├→ C-08 Proxy Engine
         │     ├→ C-03 Protocol Definition Engine
         │     ├→ C-06 Buffer Renderer
         │     ├→ C-07 Sequence Engine
         │     ├→ C-02 Context Store
         │     ├→ [mitmproxy OSS]
-        │     ├→ [mkcert subprocess]
-        │     └→ C-01 Message Content Model
+        │     └→ [mkcert subprocess]
         ├→ C-09 Suite Orchestrator
         │     ├→ C-07 Sequence Engine
         │     ├→ C-10 Session Manager
-        │     ├→ [Prefect OSS]
-        │     └→ C-01 Message Content Model
+        │     └→ [Prefect OSS]
         └→ C-11 Report Generator
+              ├→ C-01 Message Registry   ← resolves MessageRefs to IMessage at report time
               ├→ C-10 Session Manager
-              ├→ C-02 Context Store  (refs only — never calls value())
-              └→ C-01 Message Content Model
+              └→ C-02 Context Store      (refs only — never calls value())
 ```
 
-No circular dependencies. C-01 and C-02 remain the foundation. U-01 (NetworkClient) is a leaf — no internal dependencies.
+No circular dependencies. C-02 is the infrastructure foundation. C-01 (Message Registry) is a boundary-layer dependency only — core components C-02 through C-10 emit `MessageRef` primitives and carry no C-01 import. C-01 is resolved at C-11 (report generation), C-12 (URN schema registration during plugin onboarding), C-13 (library boundary), and C-14 (CLI rendering). U-01 (NetworkClient) is a leaf — no internal dependencies.
 
 **Execution log write path (resolved):** C-07 and C-08 return log entries and findings in their return types. C-09 and C-13 write these to C-10 via `record()`. Neither C-07 nor C-08 depends on C-10 directly.
 
@@ -354,8 +367,9 @@ PluginManifest
 
 IPluginProtocolDefinition  →  implements IProtocolDefinition (C-03)
 IPluginSource              →  implements ISource (C-05)
-IPluginMessageRegistry     →  contributes IMessage definitions for finding types,
-                               protocol elements, error conditions (C-01)
+IPluginMessageRegistry     →  contributes URN schemas and MessageTemplate definitions
+                               for finding types, protocol elements, and error conditions;
+                               registered with C-01 during onboarding via C-12
 ```
 
 A plugin cannot:
@@ -396,6 +410,7 @@ Interactive UI decision (TUI vs local web UI) remains deferred. C-13 Library API
 | Session termination hook | FR-075 | Added close() to ISessionManager; calls C-02.release_all() |
 | Interactive placeholder fill | FR-008 | Added fill_placeholder() to ISessionManager (C-10) |
 | Finding data model undefined | FR-043 | Defined Finding as a named shared data type |
+| C-01 as cross-cutting dependency | FR-070–073 | Introduced MessageRef primitive; C-01 becomes Message Registry; core components emit MessageRef, resolve only at boundary (C-11, C-12, C-13, C-14) |
 
 ---
 
