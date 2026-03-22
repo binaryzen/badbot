@@ -42,8 +42,8 @@ steps:
     expect_status: 403
     finding_on_unexpected:
       severity: HIGH
-      summary: "Privilege escalation: admin endpoint accessible without admin role"
-      detail: >
-        Token issued to '{ctx:claims.sub}' with scope '{ctx:claims.scope}' and
-        roles {ctx:claims.roles} was accepted by /api/admin. The endpoint
-        validates token authenticity but does not enforce role requirements.
+      urn: "urn:badbot:poc:msg:privilege_escalation"
+      params:
+        subject: claims.sub
+        scope: claims.scope
+        roles: claims.roles

@@ -35,9 +35,5 @@ steps:
     expect_status: 403
     finding_on_unexpected:
       severity: HIGH
-      summary: "BOLA: cross-user resource access succeeded"
-      detail: >
-        Authenticated as alice (user_id=1) and requested /users/2/orders using
-        alice's token. Server returned 200 with bob's order data. The
-        authorization check validates token existence but does not verify that
-        the token's owner matches the requested user_id.
+      urn: "urn:badbot:poc:msg:bola_detected"
+      params: {}

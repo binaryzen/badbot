@@ -3,13 +3,17 @@ C-10 — Session Manager (minimal POC implementation)
 
 In-memory only. Owns the context store and the execution log.
 close() triggers context store wipe (FR-075).
+
+Finding.message is a MessageRef — an opaque reference carrying ContextRef
+handles, not resolved strings. Raw values are never embedded in findings.
+The log entry for a finding records the URN only.
 """
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
 
 from .context_store import ContextStore
+from .messages import MessageRef
 
 
 @dataclass
@@ -26,8 +30,7 @@ class LogEntry:
 @dataclass
 class Finding:
     severity: str
-    summary: str
-    detail: str
+    message: MessageRef                # opaque — no raw values
     step: str | None = None
     state: str | None = None
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -48,9 +51,10 @@ class Session:
 
     def add_finding(self, finding: Finding) -> None:
         self.findings.append(finding)
+        # Log records the URN only — never the rendered text or raw param values
         self.record(LogEntry(
             kind="FINDING",
-            message=finding.summary,
+            message=finding.message.urn,
             step=finding.step,
             state=finding.state,
             data={"severity": finding.severity},

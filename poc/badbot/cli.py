@@ -11,6 +11,7 @@ import sys
 
 import yaml
 
+from .messages import render
 from .sequence_engine import ExtractionDef, FindingDef, SequenceDef, SequenceEngine, StepDef
 from .session import Session
 
@@ -29,8 +30,8 @@ def load_sequence(path: str) -> SequenceDef:
         fd_data = s.get("finding_on_unexpected")
         finding_def = FindingDef(
             severity=fd_data["severity"],
-            summary=fd_data["summary"],
-            detail=fd_data["detail"],
+            urn=fd_data["urn"],
+            params=fd_data.get("params") or {},
         ) if fd_data else None
 
         steps.append(StepDef(
@@ -67,21 +68,23 @@ def main() -> None:
     print()
 
     engine.execute()
-    session.close()
 
     print("=== Execution Log ===")
     for entry in session.log:
         step_tag = f"  [{entry.step}]" if entry.step else ""
         print(f"  {entry.kind:<12}{step_tag} {entry.message}")
-
     print()
 
     if session.findings:
         print(f"=== Findings ({len(session.findings)}) ===")
         for finding in session.findings:
-            print(f"  [{finding.severity}] {finding.summary}")
-            print(f"           {finding.detail}")
+            # Render MessageRef → human text. Raw values resolved here, before close().
+            rendered = render(finding.message, session.context)
+            print(f"  [{finding.severity}] {rendered['summary']}")
+            print(f"           {rendered['detail']}")
+        session.close()
         sys.exit(1)
     else:
         print("=== No findings ===")
+        session.close()
         sys.exit(0)
