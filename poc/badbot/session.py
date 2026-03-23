@@ -6,25 +6,27 @@ close() triggers context store wipe (FR-075).
 
 Finding.message is a MessageRef — an opaque reference carrying ContextRef
 handles, not resolved strings. Raw values are never embedded in findings.
-The log entry for a finding records the URN only.
+
+LogEntry.message is an OutputToken — a structured URN + params token.
+The log records URNs and literal metadata; sensitive values are carried
+only as ContextRef handles (opaque in tokenized output mode).
 """
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from .context_store import ContextStore
-from .messages import MessageRef
+from .messages import MessageRef, OutputToken
 
 
 @dataclass
 class LogEntry:
     kind: str                          # TRANSITION | REQUEST | EXTRACTION | FINDING
-    message: str
+    message: OutputToken
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     step: str | None = None
     state: str | None = None
-    data: dict = field(default_factory=dict)  # non-sensitive supplementary facts
 
 
 @dataclass
@@ -51,13 +53,15 @@ class Session:
 
     def add_finding(self, finding: Finding) -> None:
         self.findings.append(finding)
-        # Log records the URN only — never the rendered text or raw param values
+        # Log records URN and severity only — never rendered text or raw param values
         self.record(LogEntry(
             kind="FINDING",
-            message=finding.message.urn,
+            message=OutputToken.build(
+                "urn:badbot:poc:log:finding_recorded",
+                {"severity": finding.severity, "urn": finding.message.urn},
+            ),
             step=finding.step,
             state=finding.state,
-            data={"severity": finding.severity},
         ))
 
     def close(self) -> None:

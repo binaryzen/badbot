@@ -8,10 +8,13 @@ triggering the FSM transition.
 
 Raw context values are read in exactly two places:
   - _resolve_value(): at HTTP message construction time (URL, headers, body)
-  - messages.render(): at CLI output time, before session.close()
+  - messages.render() / messages.render_token(): at CLI output time, before session.close()
 
 Finding creation builds a MessageRef from ContextRef handles — no raw values
 are read or embedded at that point.
+
+Log entries are OutputToken instances — URN + params — never plain strings.
+Sensitive values (if ever added to log params) are carried as ContextRef handles.
 """
 import re
 from dataclasses import dataclass, field
@@ -22,7 +25,7 @@ import jwt as pyjwt
 from jsonpath_ng import parse as jsonpath_parse
 from transitions import Machine, MachineError
 
-from .messages import MessageRef
+from .messages import MessageRef, OutputToken
 from .session import Finding, LogEntry, Session
 
 
@@ -41,7 +44,7 @@ class ExtractionDef:
 class FindingDef:
     severity: str
     urn: str                       # message URN e.g. "urn:badbot:poc:msg:bola_detected"
-    params: dict[str, str]         # param name → context key (dot-notation supported)
+    params: dict[str, str]         # param name -> context key (dot-notation supported)
 
 
 @dataclass
@@ -106,7 +109,6 @@ class SequenceEngine:
         """
         Resolves a context key (dot-notation supported) to a raw string.
         Called only at HTTP message construction time.
-        context.ref() handles dot-notation; context.value() navigates the path.
         """
         ref = self.session.context.ref(key)
         return str(self.session.context.value(ref))
@@ -142,13 +144,19 @@ class SequenceEngine:
         while self.state not in ("completed", "failed"):
             step = self._step_map.get(self.state)
             if not step:
-                self._log("TRANSITION", f"No step for state '{self.state}' — halting")
+                self._log("TRANSITION", OutputToken.build(
+                    "urn:badbot:poc:log:transition_halt",
+                    {"state": self.state},
+                ))
                 self.fail()
                 break
             self._execute_step(step)
 
     def _execute_step(self, step: StepDef) -> None:
-        self._log("TRANSITION", f"Entered state '{step.name}'", step=step.name)
+        self._log("TRANSITION", OutputToken.build(
+            "urn:badbot:poc:log:transition_enter",
+            {"step": step.name},
+        ), step=step.name)
 
         url = self.base_url + self._resolve(step.path)
         headers = self._resolve_dict(step.headers)
@@ -161,16 +169,17 @@ class SequenceEngine:
                     kwargs["data" if step.body_format == "form" else "json"] = body
                 response = client.request(**kwargs)
         except httpx.RequestError as exc:
-            self._log("REQUEST", f"Request error: {exc}", step=step.name)
+            self._log("REQUEST", OutputToken.build(
+                "urn:badbot:poc:log:request_error",
+                {"step": step.name, "error": str(exc)},
+            ), step=step.name)
             self.fail()
             return
 
-        self._log(
-            "REQUEST",
-            f"{step.method} {url} -> {response.status_code}",
-            step=step.name,
-            data={"status_code": response.status_code},
-        )
+        self._log("REQUEST", OutputToken.build(
+            "urn:badbot:poc:log:request_sent",
+            {"method": step.method, "url": url, "status_code": str(response.status_code)},
+        ), step=step.name)
 
         # Context extraction
         if response.is_success and step.extract:
@@ -182,7 +191,10 @@ class SequenceEngine:
             for ext in step.extract:
                 matches = jsonpath_parse(ext.field).find(body_json)
                 if not matches:
-                    self._log("EXTRACTION", f"'{ext.field}' not found", step=step.name)
+                    self._log("EXTRACTION", OutputToken.build(
+                        "urn:badbot:poc:log:extraction_not_found",
+                        {"field": ext.field},
+                    ), step=step.name)
                     self.fail()
                     return
 
@@ -190,13 +202,22 @@ class SequenceEngine:
                 if ext.transform:
                     try:
                         value = self._apply_transform(value, ext.transform)
-                        self._log("EXTRACTION", f"Stored '{ext.into}' (transform: {ext.transform})", step=step.name)
+                        self._log("EXTRACTION", OutputToken.build(
+                            "urn:badbot:poc:log:extraction_transform_ok",
+                            {"key": ext.into, "transform": ext.transform},
+                        ), step=step.name)
                     except Exception as exc:
-                        self._log("EXTRACTION", f"Transform '{ext.transform}' failed: {exc}", step=step.name)
+                        self._log("EXTRACTION", OutputToken.build(
+                            "urn:badbot:poc:log:extraction_transform_failed",
+                            {"transform": ext.transform, "error": str(exc)},
+                        ), step=step.name)
                         self.fail()
                         return
                 else:
-                    self._log("EXTRACTION", f"Stored '{ext.into}'", step=step.name)
+                    self._log("EXTRACTION", OutputToken.build(
+                        "urn:badbot:poc:log:extraction_ok",
+                        {"key": ext.into},
+                    ), step=step.name)
 
                 self.session.context.store(ext.into, value)
 
@@ -219,10 +240,13 @@ class SequenceEngine:
         try:
             self.advance() if step.on_success else self.complete()
         except MachineError as exc:
-            self._log("TRANSITION", f"FSM error: {exc}", step=step.name)
+            self._log("TRANSITION", OutputToken.build(
+                "urn:badbot:poc:log:transition_fsm_error",
+                {"step": step.name, "error": str(exc)},
+            ), step=step.name)
             self.fail()
 
-    def _log(self, kind: str, message: str, step: str | None = None, data: dict | None = None) -> None:
+    def _log(self, kind: str, token: OutputToken, step: str | None = None) -> None:
         self.session.record(LogEntry(
-            kind=kind, message=message, step=step, state=self.state, data=data or {}
+            kind=kind, message=token, step=step, state=self.state
         ))
