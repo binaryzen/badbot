@@ -59,12 +59,17 @@ def _serialize_params(params: tuple) -> dict:
 
     Result shape per param:
       literal   → {"__lit": "value"}
-      ref       → {"__ref": "key"}  or  {"__ref": "key", "path": "sub.field"}
+      ref       → {"__ref": "key", "version": n}
+                  optionally with "path": "sub.field" for dot-notation refs
+
+    The version number is frozen into the ref at context.ref() call time,
+    ensuring refs captured before a key is overwritten resolve to the
+    correct historical value rather than the latest.
     """
     result = {}
     for name, param in params:
         if isinstance(param, ContextRef):
-            desc: dict = {"__ref": param.key}
+            desc: dict = {"__ref": param.key, "version": param.version}
             if param.path:
                 desc["path"] = param.path
             result[name] = desc
@@ -123,11 +128,16 @@ def _build_token_stream(session: Session) -> dict:
 
 def _build_context_snapshot(session: Session) -> dict:
     """
-    Build the context snapshot section. Contains raw context store values.
-    Redaction policy will apply here (FR-004 — not yet implemented).
+    Build the context snapshot section. Contains the full version history
+    for each key — a list of all values stored under that key in order.
+
+    Resolution uses {"__ref": key, "version": n} to index into the list,
+    ensuring refs captured before a key was overwritten resolve correctly.
+
+    Redaction policy (FR-004 — not yet implemented) will filter here.
     """
     return {
-        "values": dict(session.context._store),
+        "values": {k: list(v) for k, v in session.context._store.items()},
         "redacted": [],   # placeholder for redaction manifest (FR-005)
     }
 
@@ -141,20 +151,26 @@ def resolve_params(params_desc: dict, context_values: dict) -> dict[str, str]:
     Resolve a token's param descriptor dict against a context values dict.
     Returns a plain {name: resolved_string} dict for template rendering.
 
-    {"__lit": v}                → str(v)
-    {"__ref": k}                → str(context_values[k])
-    {"__ref": k, "path": p}     → navigate dot-path p into context_values[k]
-    Missing ref                 → "<missing:key>"
+    {"__lit": v}                         → str(v)
+    {"__ref": k, "version": n}           → str(context_values[k][n])
+    {"__ref": k, "version": n, "path": p}→ navigate dot-path p into that value
+    Missing key or out-of-range version  → "<missing:key[n]>"
+
+    Version-indexed lookup ensures refs captured before a key was overwritten
+    resolve to the historically correct value, not the current one.
     """
     resolved = {}
     for name, desc in params_desc.items():
         if "__lit" in desc:
             resolved[name] = str(desc["__lit"])
         elif "__ref" in desc:
-            val = context_values.get(desc["__ref"])
-            if val is None:
-                resolved[name] = f"<missing:{desc['__ref']}>"
+            key = desc["__ref"]
+            version = desc.get("version", 0)
+            history = context_values.get(key)
+            if not history or version >= len(history):
+                resolved[name] = f"<missing:{key}[{version}]>"
             else:
+                val = history[version]
                 path = desc.get("path")
                 if path:
                     for part in path.split("."):
@@ -197,7 +213,9 @@ def render_token_dict(
             else:
                 key = desc.get("__ref", "?")
                 path = desc.get("path")
-                resolved[name] = f"<ref:{key}.{path}>" if path else f"<ref:{key}>"
+                ver = desc.get("version", 0)
+                label = f"{key}.{path}" if path else key
+                resolved[name] = f"<ref:{label}[{ver}]>"
 
     log_tmpl = _REGISTRY.get(token["urn"], {}).get("log", "")
     if log_tmpl:
@@ -230,7 +248,9 @@ def render_finding_dict(
             else:
                 key = desc.get("__ref", "?")
                 path = desc.get("path")
-                resolved[name] = f"<ref:{key}.{path}>" if path else f"<ref:{key}>"
+                ver = desc.get("version", 0)
+                label = f"{key}.{path}" if path else key
+                resolved[name] = f"<ref:{label}[{ver}]>"
 
     tmpl = _REGISTRY.get(token["urn"], {})
     try:
