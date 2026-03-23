@@ -8,6 +8,7 @@ Subcommands:
 Usage:
     python -m badbot run <target_url> <sequence_file> [options]
     python -m badbot decrypt <archive> [--key <keyfile>]
+                        Session ID is read from the plaintext archive prefix.
 
 Run options:
     --clear-context     Resolve context refs in log output (default: tokenized/opaque)
@@ -100,12 +101,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         # Session ID sidecar — required as GCM associated data for decryption.
         # The ID is a UUID (non-sensitive); its purpose is to bind the ciphertext
         # to this session so a ciphertext cannot be replayed under a different ID.
-        id_path = args.output + ".id"
-        with open(id_path, "w") as f:
-            f.write(session.id)
         print(f"Session archive : {args.output}")
         print(f"Decryption key  : {key_path}")
-        print(f"Session ID      : {id_path}")
         print()
 
     # Execution log
@@ -152,29 +149,8 @@ def cmd_decrypt(args: argparse.Namespace) -> None:
         print(f"error: key file not found: {key_path}", file=sys.stderr)
         sys.exit(1)
 
-    # Session ID is required as associated data for GCM authentication.
-    # Read it from the archive header by attempting a trial decryption —
-    # since we don't store the session ID separately, the user may supply
-    # it via --session-id, or we embed it in a plaintext header prefix.
-    # For the POC: session_id is stored in a sidecar .id file at write time.
-    id_path = args.archive + ".id"
-    if args.session_id:
-        session_id = args.session_id
-    else:
-        try:
-            with open(id_path) as f:
-                session_id = f.read().strip()
-        except FileNotFoundError:
-            print(
-                f"error: session ID required for decryption.\n"
-                f"  Supply --session-id <id>, or ensure {id_path} exists.\n"
-                f"  (Re-run with --output to produce archives with a sidecar .id file.)",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
     try:
-        payload = decrypt_session(data, key, session_id)
+        payload = decrypt_session(data, key)
     except Exception as exc:
         print(f"error: decryption failed — {exc}", file=sys.stderr)
         sys.exit(1)
@@ -262,12 +238,6 @@ def main() -> None:
         metavar="FILE",
         default=None,
         help="Path to key file (default: <archive>.key)",
-    )
-    p_dec.add_argument(
-        "--session-id",
-        metavar="ID",
-        default=None,
-        help="Session UUID for GCM authentication (default: read from <archive>.id)",
     )
 
     args = parser.parse_args()
