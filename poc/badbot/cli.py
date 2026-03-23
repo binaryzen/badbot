@@ -30,7 +30,7 @@ import yaml
 
 from .messages import render, render_token
 from .output import decrypt_session, encrypt_session
-from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, SequenceDef, SequenceEngine, StepDef
+from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef
 from .session import Session
 
 
@@ -71,6 +71,16 @@ def load_sequence(path: str) -> SequenceDef:
                 finding_on_fail=ba_finding_def,
             ))
 
+        lf_data = s.get("loop_finding")
+        loop_finding = LoopFindingDef(
+            expect_status=lf_data["expect_status"],
+            finding=FindingDef(
+                severity=lf_data["finding"]["severity"],
+                urn=lf_data["finding"]["urn"],
+                params=lf_data["finding"].get("params") or {},
+            ),
+        ) if lf_data else None
+
         steps.append(StepDef(
             name=s["name"],
             method=s["method"],
@@ -82,6 +92,8 @@ def load_sequence(path: str) -> SequenceDef:
             expect_status=s.get("expect_status"),
             finding_on_unexpected=finding_def,
             body_assertions=body_assertions,
+            repeat=s.get("repeat"),
+            loop_finding=loop_finding,
             on_success=s.get("on_success"),
         ))
 

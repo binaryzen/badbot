@@ -1,0 +1,35 @@
+name: rate_limit_probe
+description: >
+  Authenticate via OAuth client credentials, then flood an authenticated
+  endpoint with repeated requests. Expects the server to respond with 429
+  Too Many Requests after some threshold. If no 429 is observed across all
+  iterations, rate limiting is not enforced.
+
+steps:
+  - name: authenticate
+    method: POST
+    path: /oauth/token
+    body_format: form
+    body:
+      grant_type: client_credentials
+      client_id: client_app
+      client_secret: client_secret_123
+      scope: "read:orders"
+    extract:
+      - field: "$.access_token"
+        into: access_token
+    expect_status: 200
+    on_success: flood_endpoint
+
+  - name: flood_endpoint
+    method: GET
+    path: /api/orders
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    repeat: 15
+    loop_finding:
+      expect_status: 429
+      finding:
+        severity: MEDIUM
+        urn: "urn:badbot:poc:msg:rate_limit_not_enforced"
+        params: {}

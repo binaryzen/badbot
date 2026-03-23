@@ -56,6 +56,12 @@ class BodyAssertionDef:
 
 
 @dataclass
+class LoopFindingDef:
+    expect_status: int        # status we expect to see at least once across all iterations
+    finding: FindingDef       # recorded if expect_status is never observed
+
+
+@dataclass
 class StepDef:
     name: str
     method: str
@@ -67,6 +73,8 @@ class StepDef:
     expect_status: int | None = None
     finding_on_unexpected: FindingDef | None = None
     body_assertions: list[BodyAssertionDef] = field(default_factory=list)
+    repeat: int | None = None             # send the request this many times
+    loop_finding: LoopFindingDef | None = None  # fire if expected status never seen in loop
     on_success: str | None = None  # name of next state; None means terminal
 
 
@@ -161,6 +169,14 @@ class SequenceEngine:
                 break
             self._execute_step(step)
 
+    def _send_request(self, step: StepDef, url: str, headers: dict, body: dict | None):
+        """Issue a single HTTP request. Returns response or raises on network error."""
+        with httpx.Client() as client:
+            kwargs: dict = {"method": step.method, "url": url, "headers": headers}
+            if body is not None:
+                kwargs["data" if step.body_format == "form" else "json"] = body
+            return client.request(**kwargs)
+
     def _execute_step(self, step: StepDef) -> None:
         self._log("TRANSITION", OutputToken.build(
             "urn:badbot:poc:log:transition_enter",
@@ -171,24 +187,73 @@ class SequenceEngine:
         headers = self._resolve_dict(step.headers)
         body = self._resolve_dict(step.body) if step.body else None
 
-        try:
-            with httpx.Client() as client:
-                kwargs: dict = {"method": step.method, "url": url, "headers": headers}
-                if body is not None:
-                    kwargs["data" if step.body_format == "form" else "json"] = body
-                response = client.request(**kwargs)
-        except httpx.RequestError as exc:
-            self._log("REQUEST", OutputToken.build(
-                "urn:badbot:poc:log:request_error",
-                {"step": step.name, "error": str(exc)},
-            ), step=step.name)
-            self.fail()
-            return
+        # ------------------------------------------------------------------
+        # Repeat loop — used for probes that need multiple iterations
+        # (e.g. rate limiting). Extraction and body assertions run once on
+        # the first 2xx response. finding_on_unexpected is not applied
+        # per-iteration. loop_finding fires if expect_status never observed.
+        # ------------------------------------------------------------------
+        if step.repeat:
+            total = step.repeat
+            seen_statuses: set[int] = set()
+            first_success_response = None
 
-        self._log("REQUEST", OutputToken.build(
-            "urn:badbot:poc:log:request_sent",
-            {"method": step.method, "url": url, "status_code": str(response.status_code)},
-        ), step=step.name)
+            for n in range(1, total + 1):
+                try:
+                    response = self._send_request(step, url, headers, body)
+                except httpx.RequestError as exc:
+                    self._log("REQUEST", OutputToken.build(
+                        "urn:badbot:poc:log:request_error",
+                        {"step": step.name, "error": str(exc)},
+                    ), step=step.name)
+                    self.fail()
+                    return
+
+                seen_statuses.add(response.status_code)
+                self._log("LOOP", OutputToken.build(
+                    "urn:badbot:poc:log:loop_iteration",
+                    {"n": str(n), "total": str(total), "method": step.method,
+                     "url": url, "status_code": str(response.status_code)},
+                ), step=step.name)
+
+                if first_success_response is None and response.is_success:
+                    first_success_response = response
+
+            # Use first successful response (or last response) for extraction
+            response = first_success_response or response  # type: ignore[possibly-undefined]
+
+            if step.loop_finding:
+                lf = step.loop_finding
+                if lf.expect_status not in seen_statuses:
+                    self._log("LOOP", OutputToken.build(
+                        "urn:badbot:poc:log:loop_status_never_seen",
+                        {"status": str(lf.expect_status), "count": str(total)},
+                    ), step=step.name)
+                    fd = lf.finding
+                    self.session.add_finding(Finding(
+                        severity=fd.severity,
+                        message=MessageRef.build(urn=fd.urn, params={}),
+                        step=step.name,
+                        state=self.state,
+                    ))
+        else:
+            # ------------------------------------------------------------------
+            # Single request — original behaviour
+            # ------------------------------------------------------------------
+            try:
+                response = self._send_request(step, url, headers, body)
+            except httpx.RequestError as exc:
+                self._log("REQUEST", OutputToken.build(
+                    "urn:badbot:poc:log:request_error",
+                    {"step": step.name, "error": str(exc)},
+                ), step=step.name)
+                self.fail()
+                return
+
+            self._log("REQUEST", OutputToken.build(
+                "urn:badbot:poc:log:request_sent",
+                {"method": step.method, "url": url, "status_code": str(response.status_code)},
+            ), step=step.name)
 
         # Context extraction
         if response.is_success and step.extract:

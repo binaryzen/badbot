@@ -241,6 +241,23 @@ register("urn:badbot:poc:log:finding_recorded",
 register("urn:badbot:poc:log:assertion_failed",
          log="Body assertion failed: {path} — expected not_equals={expected}, got={actual}")
 
+register("urn:badbot:poc:log:loop_iteration",
+         log="Iteration {n}/{total}: {method} {url} -> {status_code}")
+
+register("urn:badbot:poc:log:loop_status_never_seen",
+         log="Status {status} not observed after {count} requests")
+
+register(
+    "urn:badbot:poc:msg:rate_limit_not_enforced",
+    summary="Rate limiting not enforced: endpoint accepted unlimited requests",
+    detail=(
+        "The endpoint returned 200 for every request in the probe sequence. "
+        "No 429 Too Many Requests response was observed. Without rate limiting, "
+        "the endpoint is exposed to enumeration, credential stuffing, and "
+        "resource exhaustion attacks."
+    ),
+)
+
 register(
     "urn:badbot:poc:msg:mass_assignment",
     summary="Mass assignment: server accepted and applied a client-supplied protected field",
