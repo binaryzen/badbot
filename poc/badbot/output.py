@@ -1,35 +1,87 @@
 """
 Session serialization and AES-GCM encryption.
 
-encrypt_session() produces an opaque byte stream suitable for storage or
-transmission. The stream is authenticated — any tampering raises InvalidTag
-on decrypt. The session ID is stored as a plaintext prefix so it can be
-read before decryption and fed into the GCM authentication check without
-needing any external sidecar.
+Archives contain two independently-encrypted sections under a single key:
 
-Wire format: [36-byte session_id ASCII] [12-byte nonce] [ciphertext + 16-byte GCM tag]
+  Token stream    — log entries and findings with params as descriptors.
+                    Literals: {"__lit": "value"}
+                    Context refs: {"__ref": "key"} or {"__ref": "key", "path": "sub"}
+                    Contains no raw context values — safe to share without the
+                    context snapshot (refs render as <ref:key> when unresolved).
 
-The session_id prefix is authenticated (AAD) but not encrypted — it binds
-the ciphertext to its session. An archive from session A cannot be presented
-as session B's archive without failing the authentication check.
+  Context snapshot — raw context store values. This is the sensitive section.
+                     Redaction policy applies here when implemented (FR-004).
+                     Decrypt the token stream without this section to keep
+                     context values opaque.
+
+Both sections are encrypted with different AAD so they cannot be swapped or
+detached and re-attached to a different archive.
+
+Wire format:
+  [36 bytes : session_id ASCII]          -- plaintext; AAD base for both sections
+  [12 bytes : token nonce]
+  [4 bytes  : token ciphertext length, big-endian uint32]
+  [N bytes  : token ciphertext + 16-byte GCM tag]
+  [12 bytes : context nonce]
+  [remaining: context ciphertext + 16-byte GCM tag]
+
+AAD:
+  token section   : session_id + b":tokens"
+  context section : session_id + b":context"
 
 Usage:
-    from badbot.output import encrypt_session, decrypt_session
-
-    ciphertext, key = encrypt_session(session)   # key = 32 random bytes
-    data = decrypt_session(ciphertext, key)       # raises InvalidTag on tamper
+    encrypted, key = encrypt_session(session)
+    token_stream, context_snapshot = decrypt_session(encrypted, key)
+    # token_stream and context_snapshot are dicts; context_snapshot may be None
+    # if decryption of the context section is skipped (--tokens-only).
 """
 import json
 import os
+import struct
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from .messages import serialize_message_ref, serialize_token
+from .context_store import ContextRef
+from .messages import OutputToken
 from .session import Session
 
 
-def _build_payload(session: Session) -> dict:
-    """Serialize session log + findings to a plain dict (all refs resolved)."""
+# ---------------------------------------------------------------------------
+# Param descriptor serialization
+# ---------------------------------------------------------------------------
+
+def _serialize_params(params: tuple) -> dict:
+    """
+    Serialize OutputToken or MessageRef params to JSON-safe descriptor dicts.
+
+    OutputToken params may be str (literal) or ContextRef.
+    MessageRef params are always ContextRef.
+
+    Result shape per param:
+      literal   → {"__lit": "value"}
+      ref       → {"__ref": "key"}  or  {"__ref": "key", "path": "sub.field"}
+    """
+    result = {}
+    for name, param in params:
+        if isinstance(param, ContextRef):
+            desc: dict = {"__ref": param.key}
+            if param.path:
+                desc["path"] = param.path
+            result[name] = desc
+        else:
+            result[name] = {"__lit": str(param)}
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Token stream construction (no context values)
+# ---------------------------------------------------------------------------
+
+def _build_token_stream(session: Session) -> dict:
+    """
+    Build the token stream section. Params are descriptors — no raw values.
+    Safe to decrypt and share without the context snapshot.
+    """
     return {
         "session_id": session.id,
         "target": session.target,
@@ -41,7 +93,10 @@ def _build_payload(session: Session) -> dict:
                 "kind": entry.kind,
                 "step": entry.step,
                 "state": entry.state,
-                "token": serialize_token(entry.message, session.context),
+                "token": {
+                    "urn": entry.message.urn,
+                    "params": _serialize_params(entry.message.params),
+                },
             }
             for entry in session.log
         ],
@@ -52,44 +107,203 @@ def _build_payload(session: Session) -> dict:
                 "severity": finding.severity,
                 "step": finding.step,
                 "state": finding.state,
-                "token": serialize_message_ref(finding.message, session.context),
+                "token": {
+                    "urn": finding.message.urn,
+                    "params": _serialize_params(finding.message.params),
+                },
             }
             for finding in session.findings
         ],
     }
 
 
+# ---------------------------------------------------------------------------
+# Context snapshot construction
+# ---------------------------------------------------------------------------
+
+def _build_context_snapshot(session: Session) -> dict:
+    """
+    Build the context snapshot section. Contains raw context store values.
+    Redaction policy will apply here (FR-004 — not yet implemented).
+    """
+    return {
+        "values": dict(session.context._store),
+        "redacted": [],   # placeholder for redaction manifest (FR-005)
+    }
+
+
+# ---------------------------------------------------------------------------
+# Param resolution
+# ---------------------------------------------------------------------------
+
+def resolve_params(params_desc: dict, context_values: dict) -> dict[str, str]:
+    """
+    Resolve a token's param descriptor dict against a context values dict.
+    Returns a plain {name: resolved_string} dict for template rendering.
+
+    {"__lit": v}                → str(v)
+    {"__ref": k}                → str(context_values[k])
+    {"__ref": k, "path": p}     → navigate dot-path p into context_values[k]
+    Missing ref                 → "<missing:key>"
+    """
+    resolved = {}
+    for name, desc in params_desc.items():
+        if "__lit" in desc:
+            resolved[name] = str(desc["__lit"])
+        elif "__ref" in desc:
+            val = context_values.get(desc["__ref"])
+            if val is None:
+                resolved[name] = f"<missing:{desc['__ref']}>"
+            else:
+                path = desc.get("path")
+                if path:
+                    for part in path.split("."):
+                        if isinstance(val, dict):
+                            val = val.get(part, f"<missing:{part}>")
+                        elif isinstance(val, list):
+                            try:
+                                val = val[int(part)]
+                            except (IndexError, ValueError):
+                                val = f"<missing:{part}>"
+                                break
+                resolved[name] = str(val)
+        else:
+            resolved[name] = "<unknown>"
+    return resolved
+
+
+def render_token_dict(
+    token: dict,
+    context_values: dict | None = None,
+) -> str:
+    """
+    Render a serialized token dict to a human-readable string.
+
+    context_values=None  → refs shown as <ref:key[.path]> (opaque)
+    context_values={}    → refs resolved (or <missing:key> if absent)
+
+    Applies the registered log template if available; falls back to k=v format.
+    """
+    from .messages import _REGISTRY
+
+    if context_values is not None:
+        resolved = resolve_params(token["params"], context_values)
+    else:
+        # Opaque mode: show literals as-is, refs as <ref:...>
+        resolved = {}
+        for name, desc in token["params"].items():
+            if "__lit" in desc:
+                resolved[name] = str(desc["__lit"])
+            else:
+                key = desc.get("__ref", "?")
+                path = desc.get("path")
+                resolved[name] = f"<ref:{key}.{path}>" if path else f"<ref:{key}>"
+
+    log_tmpl = _REGISTRY.get(token["urn"], {}).get("log", "")
+    if log_tmpl:
+        try:
+            return log_tmpl.format(**resolved)
+        except KeyError:
+            pass
+
+    parts = [f"{k}={v}" for k, v in resolved.items()]
+    return f"[{token['urn']}] {' '.join(parts)}"
+
+
+def render_finding_dict(
+    token: dict,
+    context_values: dict | None = None,
+) -> dict[str, str]:
+    """
+    Render a finding token dict to {"summary": ..., "detail": ...}.
+    context_values=None leaves refs opaque in the rendered text.
+    """
+    from .messages import _REGISTRY
+
+    if context_values is not None:
+        resolved = resolve_params(token["params"], context_values)
+    else:
+        resolved = {}
+        for name, desc in token["params"].items():
+            if "__lit" in desc:
+                resolved[name] = str(desc["__lit"])
+            else:
+                key = desc.get("__ref", "?")
+                path = desc.get("path")
+                resolved[name] = f"<ref:{key}.{path}>" if path else f"<ref:{key}>"
+
+    tmpl = _REGISTRY.get(token["urn"], {})
+    try:
+        summary = tmpl.get("summary", "").format(**resolved) or f"[{token['urn']}]"
+        detail  = tmpl.get("detail",  "").format(**resolved)
+    except KeyError:
+        summary = f"[{token['urn']}] " + " ".join(f"{k}={v}" for k, v in resolved.items())
+        detail  = ""
+    return {"summary": summary, "detail": detail}
+
+
+# ---------------------------------------------------------------------------
+# Encryption
+# ---------------------------------------------------------------------------
+
+def _encrypt_section(plaintext: bytes, key: bytes, aad: bytes) -> bytes:
+    """AES-GCM encrypt a section. Returns nonce + ciphertext + tag."""
+    nonce = os.urandom(12)
+    return nonce + AESGCM(key).encrypt(nonce, plaintext, aad)
+
+
 def encrypt_session(session: Session, key: bytes | None = None) -> tuple[bytes, bytes]:
     """
-    Serialize and AES-GCM encrypt the session log + findings.
-
+    Produce a two-section AES-GCM archive.
     Must be called before session.close() — context values must still be live.
 
-    Returns:
-        (encrypted_bytes, key)
-        key is 32 random bytes if not supplied; caller is responsible for storing it.
-
-    Associated data: session_id bytes bind the ciphertext to the session.
+    Returns (archive_bytes, key). key is 32 random bytes if not supplied.
     """
     if key is None:
         key = os.urandom(32)
 
-    plaintext = json.dumps(_build_payload(session), indent=2).encode()
-    nonce = os.urandom(12)
-    aad = session.id.encode()  # 36 ASCII bytes; authenticated but not encrypted
+    sid = session.id.encode()   # 36 bytes, plaintext prefix and AAD base
 
-    ciphertext = AESGCM(key).encrypt(nonce, plaintext, aad)
-    # Prepend session_id as plaintext so decrypt_session can recover it
-    # without a sidecar. The GCM tag covers it via AAD.
-    return aad + nonce + ciphertext, key
+    token_plain   = json.dumps(_build_token_stream(session),   indent=2).encode()
+    context_plain = json.dumps(_build_context_snapshot(session), indent=2).encode()
+
+    token_section   = _encrypt_section(token_plain,   key, sid + b":tokens")
+    context_section = _encrypt_section(context_plain, key, sid + b":context")
+
+    # Wire: session_id | token_len(4) | token_section | context_section
+    token_len = struct.pack(">I", len(token_section))
+    return sid + token_len + token_section + context_section, key
 
 
-def decrypt_session(data: bytes, key: bytes) -> dict:
+# ---------------------------------------------------------------------------
+# Decryption
+# ---------------------------------------------------------------------------
+
+def decrypt_session(
+    data: bytes,
+    key: bytes,
+    tokens_only: bool = False,
+) -> tuple[dict, dict | None]:
     """
-    Decrypt and return the session payload dict.
-    Session ID is read from the plaintext prefix and authenticated via GCM AAD.
-    Raises cryptography.exceptions.InvalidTag if the ciphertext has been tampered.
+    Decrypt and return (token_stream, context_snapshot).
+
+    tokens_only=True skips context decryption; context_snapshot is None.
+    Raises cryptography.exceptions.InvalidTag if either section is tampered.
     """
-    aad, nonce, ciphertext = data[:36], data[36:48], data[48:]
-    plaintext = AESGCM(key).decrypt(nonce, ciphertext, aad)
-    return json.loads(plaintext)
+    sid = data[:36]
+    token_len = struct.unpack(">I", data[36:40])[0]
+    token_section   = data[40 : 40 + token_len]
+    context_section = data[40 + token_len :]
+
+    token_nonce, token_ct   = token_section[:12], token_section[12:]
+    token_plain = AESGCM(key).decrypt(token_nonce, token_ct, sid + b":tokens")
+    token_stream = json.loads(token_plain)
+
+    if tokens_only:
+        return token_stream, None
+
+    ctx_nonce, ctx_ct = context_section[:12], context_section[12:]
+    ctx_plain = AESGCM(key).decrypt(ctx_nonce, ctx_ct, sid + b":context")
+    context_snapshot = json.loads(ctx_plain)
+
+    return token_stream, context_snapshot

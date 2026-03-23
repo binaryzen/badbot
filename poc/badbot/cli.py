@@ -29,7 +29,7 @@ import sys
 import yaml
 
 from .messages import render, render_token
-from .output import decrypt_session, encrypt_session
+from .output import decrypt_session, encrypt_session, render_finding_dict, render_token_dict
 from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef
 from .session import Session
 
@@ -178,56 +178,37 @@ def cmd_decrypt(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     try:
-        payload = decrypt_session(data, key)
+        token_stream, context_snapshot = decrypt_session(data, key, tokens_only=args.tokens_only)
     except Exception as exc:
         print(f"error: decryption failed — {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Session  : {payload['session_id']}")
-    print(f"Target   : {payload['target']}")
-    print(f"Created  : {payload['created_at']}")
+    context_values = context_snapshot["values"] if context_snapshot else None
+    mode = "tokens only" if args.tokens_only else "clear"
+
+    print(f"Session  : {token_stream['session_id']}")
+    print(f"Target   : {token_stream['target']}")
+    print(f"Created  : {token_stream['created_at']}")
+    print(f"Output   : {mode}")
     print()
 
     print("=== Execution Log ===")
-    for entry in payload["log"]:
+    for entry in token_stream["log"]:
         step_tag = f"  [{entry['step']}]" if entry.get("step") else ""
-        token = entry["token"]
-        # Render recovered token: use registered log template if available,
-        # otherwise fall back to generic "k=v" format.
-        from .messages import _REGISTRY
-        log_tmpl = _REGISTRY.get(token["urn"], {}).get("log", "")
-        try:
-            text = log_tmpl.format(**token["params"]) if log_tmpl else _format_token(token)
-        except KeyError:
-            text = _format_token(token)
+        text = render_token_dict(entry["token"], context_values)
         print(f"  {entry['kind']:<12}{step_tag} {text}")
     print()
 
-    findings = payload.get("findings", [])
+    findings = token_stream.get("findings", [])
     if findings:
         print(f"=== Findings ({len(findings)}) ===")
         for finding in findings:
-            token = finding["token"]
-            from .messages import _REGISTRY
-            summary_tmpl = _REGISTRY.get(token["urn"], {}).get("summary", "")
-            detail_tmpl  = _REGISTRY.get(token["urn"], {}).get("detail", "")
-            try:
-                summary = summary_tmpl.format(**token["params"]) if summary_tmpl else _format_token(token)
-                detail  = detail_tmpl.format(**token["params"])  if detail_tmpl  else ""
-            except KeyError:
-                summary = _format_token(token)
-                detail = ""
-            print(f"  [{finding['severity']}] {summary}")
-            if detail:
-                print(f"           {detail}")
+            rendered = render_finding_dict(finding["token"], context_values)
+            print(f"  [{finding['severity']}] {rendered['summary']}")
+            if rendered["detail"]:
+                print(f"           {rendered['detail']}")
     else:
         print("=== No findings ===")
-
-
-def _format_token(token: dict) -> str:
-    """Generic fallback: '[urn] k=v ...'"""
-    parts = [f"{k}={v}" for k, v in token.get("params", {}).items()]
-    return f"[{token['urn']}] {' '.join(parts)}"
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +247,12 @@ def main() -> None:
         metavar="FILE",
         default=None,
         help="Path to key file (default: <archive>.key)",
+    )
+    p_dec.add_argument(
+        "--tokens-only",
+        action="store_true",
+        default=False,
+        help="Decrypt token stream only; context refs shown as <ref:key> (context snapshot not decrypted)",
     )
 
     args = parser.parse_args()
