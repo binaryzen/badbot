@@ -1,0 +1,53 @@
+name: mass_assignment_probe
+description: >
+  Authenticate via OAuth client credentials, then create an order injecting a
+  price_override field that the server should ignore. Retrieve the order and
+  assert that the effective_price was not overridden. A match indicates the
+  server accepted a client-supplied value for a server-controlled field.
+
+steps:
+  - name: authenticate
+    method: POST
+    path: /oauth/token
+    body_format: form
+    body:
+      grant_type: client_credentials
+      client_id: client_app
+      client_secret: client_secret_123
+      scope: "read:orders"
+    extract:
+      - field: "$.access_token"
+        into: access_token
+    expect_status: 200
+    on_success: create_order
+
+  - name: create_order
+    method: POST
+    path: /api/orders
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    body:
+      item: "Widget A"
+      quantity: 2
+      price_override: 0.0
+    extract:
+      - field: "$.order_id"
+        into: order_id
+    expect_status: 201
+    on_success: verify_order
+
+  - name: verify_order
+    method: GET
+    path: "/api/orders/{ctx:order_id}"
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    expect_status: 200
+    body_assertions:
+      - path: "$.effective_price"
+        not_equals: 0.0
+        finding_on_fail:
+          severity: HIGH
+          urn: "urn:badbot:poc:msg:mass_assignment"
+          params:
+            path: _assertion_path
+            actual: _assertion_actual

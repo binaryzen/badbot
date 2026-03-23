@@ -237,3 +237,16 @@ register("urn:badbot:poc:log:extraction_transform_failed",
 
 register("urn:badbot:poc:log:finding_recorded",
          log="Finding recorded [{severity}]: {urn}")
+
+register("urn:badbot:poc:log:assertion_failed",
+         log="Body assertion failed: {path} — expected not_equals={expected}, got={actual}")
+
+register(
+    "urn:badbot:poc:msg:mass_assignment",
+    summary="Mass assignment: server accepted and applied a client-supplied protected field",
+    detail=(
+        "Field '{path}' was submitted with value '{actual}' in the request body. "
+        "The server stored and applied the value rather than ignoring it. "
+        "Clients should not be able to influence server-controlled fields."
+    ),
+)

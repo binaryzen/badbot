@@ -48,6 +48,14 @@ class FindingDef:
 
 
 @dataclass
+class BodyAssertionDef:
+    path: str                          # JSONPath expression e.g. "$.effective_price"
+    not_equals: Any = None             # finding if actual value equals this
+    equals: Any = None                 # finding if actual value does NOT equal this
+    finding_on_fail: FindingDef | None = None
+
+
+@dataclass
 class StepDef:
     name: str
     method: str
@@ -58,6 +66,7 @@ class StepDef:
     extract: list[ExtractionDef] = field(default_factory=list)
     expect_status: int | None = None
     finding_on_unexpected: FindingDef | None = None
+    body_assertions: list[BodyAssertionDef] = field(default_factory=list)
     on_success: str | None = None  # name of next state; None means terminal
 
 
@@ -220,6 +229,54 @@ class SequenceEngine:
                     ), step=step.name)
 
                 self.session.context.store(ext.into, value)
+
+        # Body assertion evaluation — only runs on 2xx responses with a JSON body
+        if response.is_success and step.body_assertions:
+            try:
+                assertion_body = response.json()
+            except Exception:
+                assertion_body = None
+
+            if assertion_body is not None:
+                for assertion in step.body_assertions:
+                    matches = jsonpath_parse(assertion.path).find(assertion_body)
+                    actual = matches[0].value if matches else None
+
+                    failed = False
+                    expected_repr: Any = None
+                    if assertion.not_equals is not None and actual == assertion.not_equals:
+                        failed = True
+                        expected_repr = assertion.not_equals
+                    elif assertion.equals is not None and actual != assertion.equals:
+                        failed = True
+                        expected_repr = assertion.equals
+
+                    if failed:
+                        self.session.context.store("_assertion_path", assertion.path)
+                        self.session.context.store("_assertion_actual", str(actual))
+                        self.session.context.store("_assertion_expected", str(expected_repr))
+
+                        self._log("ASSERTION", OutputToken.build(
+                            "urn:badbot:poc:log:assertion_failed",
+                            {
+                                "path": assertion.path,
+                                "expected": str(expected_repr),
+                                "actual": str(actual),
+                            },
+                        ), step=step.name)
+
+                        if assertion.finding_on_fail:
+                            fd = assertion.finding_on_fail
+                            params = {
+                                name: self.session.context.ref(key)
+                                for name, key in fd.params.items()
+                            }
+                            self.session.add_finding(Finding(
+                                severity=fd.severity,
+                                message=MessageRef.build(urn=fd.urn, params=params),
+                                step=step.name,
+                                state=self.state,
+                            ))
 
         # Finding check — builds MessageRef with ContextRef handles, no raw values read
         if step.expect_status is not None and response.status_code != step.expect_status:

@@ -1,5 +1,5 @@
 """
-Mock server with two intentional vulnerabilities for POC sequences.
+Mock server with intentional vulnerabilities for POC sequences.
 
 --- BOLA sequence (auth_bola_probe.yaml) ---
 POST /auth              — authenticate, receive token + user_id
@@ -9,6 +9,11 @@ GET  /users/{id}/orders — validates token exists; does NOT check ownership (BO
 POST /oauth/token       — client credentials grant; returns signed JWT
 GET  /api/orders        — scope-gated (requires read:orders)
 GET  /api/admin         — validates token but does NOT check roles (privilege escalation)
+
+--- Mass assignment sequence (mass_assignment_probe.yaml) ---
+POST /oauth/token       — client credentials grant (shared endpoint)
+POST /api/orders        — create order; intentional vulnerability: accepts price_override
+GET  /api/orders/{id}   — retrieve stored order by ID
 """
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -130,8 +135,95 @@ def api_orders(claims: dict = Depends(_require_token)):
     return {"orders": [{"id": 1, "item": "Widget A", "amount": 29.99}]}
 
 
+# ============================================================================
+# Mass assignment endpoints
+# ============================================================================
+
+CREATED_ORDERS: dict[int, dict] = {}
+_order_counter = 0
+
+CATALOG_PRICE = 29.99
+
+
+class OrderRequest(BaseModel):
+    item: str
+    quantity: int
+    price_override: float | None = None
+
+
+@app.post("/api/orders", status_code=201)
+def create_order(req: OrderRequest, claims: dict = Depends(_require_token)):
+    if "read:orders" not in claims.get("scope", "").split():
+        raise HTTPException(status_code=403, detail="Insufficient scope: read:orders required")
+    global _order_counter
+    _order_counter += 1
+    # Intentional vulnerability: blindly applies client-supplied price_override
+    # instead of ignoring it and using the catalog price.
+    effective_price = req.price_override if req.price_override is not None else CATALOG_PRICE
+    order = {
+        "order_id": _order_counter,
+        "item": req.item,
+        "quantity": req.quantity,
+        "effective_price": effective_price,
+    }
+    CREATED_ORDERS[_order_counter] = order
+    return order
+
+
+@app.get("/api/orders/{order_id}")
+def get_order(order_id: int, claims: dict = Depends(_require_token)):
+    order = CREATED_ORDERS.get(order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
 @app.get("/api/admin")
 def api_admin(claims: dict = Depends(_require_token)):
     # Intentional vulnerability: validates the token is genuine but never
     # checks whether the caller holds the 'admin' role.
     return {"secret": "admin-data", "caller": claims.get("sub")}
+
+
+# ============================================================================
+# Mass assignment mock data
+# ============================================================================
+
+CATALOG_PRICE = 29.99
+
+CREATED_ORDERS: dict[int, dict] = {}
+_order_id_counter = 0
+
+
+class OrderRequest(BaseModel):
+    item: str
+    quantity: int
+    price_override: float | None = None
+
+
+@app.post("/api/orders", status_code=201)
+def create_order(req: OrderRequest, claims: dict = Depends(_require_token)):
+    global _order_id_counter
+    if "read:orders" not in claims.get("scope", "").split():
+        raise HTTPException(status_code=403, detail="Insufficient scope: read:orders required")
+    _order_id_counter += 1
+    order_id = _order_id_counter
+    # Intentional vulnerability: if price_override is present, the server uses it
+    # as effective_price rather than looking up the catalog price.
+    effective_price = req.price_override if req.price_override is not None else CATALOG_PRICE
+    order = {
+        "order_id": order_id,
+        "item": req.item,
+        "quantity": req.quantity,
+        "effective_price": effective_price,
+    }
+    CREATED_ORDERS[order_id] = order
+    return order
+
+
+@app.get("/api/orders/{order_id}")
+def get_order(order_id: int, claims: dict = Depends(_require_token)):
+    order = CREATED_ORDERS.get(order_id)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
