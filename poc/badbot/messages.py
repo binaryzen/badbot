@@ -248,6 +248,11 @@ register("urn:badbot:poc:log:loop_status_never_seen",
          log="Status {status} not observed after {count} requests")
 
 register(
+    "urn:badbot:poc:log:for_each_iteration",
+    log="Iteration {n}/{total}: {into}={value} {method} {url} -> {status_code}",
+)
+
+register(
     "urn:badbot:poc:msg:rate_limit_not_enforced",
     summary="Rate limiting not enforced: endpoint accepted unlimited requests",
     detail=(
@@ -265,5 +270,24 @@ register(
         "Field '{path}' was submitted with value '{actual}' in the request body. "
         "The server stored and applied the value rather than ignoring it. "
         "Clients should not be able to influence server-controlled fields."
+    ),
+)
+
+register(
+    "urn:badbot:poc:msg:payment_bypass",
+    summary="Workflow bypass: checkout confirmed without valid payment",
+    detail=(
+        "POST to /shop/cart/.../confirm returned a non-402 response without an "
+        "accepted payment. The workflow enforcement check is missing or bypassable."
+    ),
+)
+
+register(
+    "urn:badbot:poc:msg:underpayment_accepted",
+    summary="Underpayment accepted: server applied below-total payment as full payment",
+    detail=(
+        "POST to /shop/cart/.../pay returned 200 for an amount below the cart total. "
+        "The server accepted the partial payment and marked the cart as paid rather "
+        "than enforcing a minimum equal to the cart total."
     ),
 )

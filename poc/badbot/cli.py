@@ -30,7 +30,7 @@ import yaml
 
 from .messages import render, render_token
 from .output import decrypt_session, encrypt_session, render_finding_dict, render_token_dict
-from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef
+from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, ForEachDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef
 from .session import Session
 
 
@@ -81,6 +81,12 @@ def load_sequence(path: str) -> SequenceDef:
             ),
         ) if lf_data else None
 
+        fe_data = s.get("for_each")
+        for_each = ForEachDef(
+            into=fe_data["into"],
+            values=fe_data["values"],
+        ) if fe_data else None
+
         steps.append(StepDef(
             name=s["name"],
             method=s["method"],
@@ -95,6 +101,8 @@ def load_sequence(path: str) -> SequenceDef:
             repeat=s.get("repeat"),
             loop_finding=loop_finding,
             on_success=s.get("on_success"),
+            on_status=s.get("on_status"),
+            for_each=for_each,
         ))
 
     return SequenceDef(name=data["name"], description=data["description"], steps=steps)

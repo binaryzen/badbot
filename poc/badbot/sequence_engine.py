@@ -62,6 +62,12 @@ class LoopFindingDef:
 
 
 @dataclass
+class ForEachDef:
+    into: str    # context key to store each iteration value
+    values: list # values to iterate over
+
+
+@dataclass
 class StepDef:
     name: str
     method: str
@@ -75,7 +81,9 @@ class StepDef:
     body_assertions: list[BodyAssertionDef] = field(default_factory=list)
     repeat: int | None = None             # send the request this many times
     loop_finding: LoopFindingDef | None = None  # fire if expected status never seen in loop
-    on_success: str | None = None  # name of next state; None means terminal
+    on_success: str | None = None  # fallback next state; None means terminal
+    on_status: dict[str, str] | None = None  # status_code_str -> next_state_name
+    for_each: ForEachDef | None = None    # iterate step over a list of values
 
 
 @dataclass
@@ -99,22 +107,17 @@ class SequenceEngine:
 
     def _setup_fsm(self) -> None:
         states = [s.name for s in self.sequence.steps] + ["completed", "failed"]
-        transitions: list[dict] = [
-            {"trigger": "fail",     "source": "*", "dest": "failed"},
-            {"trigger": "complete", "source": "*", "dest": "completed"},
-        ]
-        for step in self.sequence.steps:
-            if step.on_success:
-                transitions.append({
-                    "trigger": "advance",
-                    "source": step.name,
-                    "dest": step.on_success,
-                })
+        # auto_transitions=True (default) generates to_{state}() for all states,
+        # which is how on_status and on_success routing calls transitions.
         Machine(
             model=self,
             states=states,
-            transitions=transitions,
+            transitions=[
+                {"trigger": "fail",     "source": "*", "dest": "failed"},
+                {"trigger": "complete", "source": "*", "dest": "completed"},
+            ],
             initial=self.sequence.steps[0].name,
+            auto_transitions=True,
             ignore_invalid_triggers=False,
         )
 
@@ -154,6 +157,28 @@ class SequenceEngine:
         raise ValueError(f"Unknown transform: {transform!r}")
 
     # ------------------------------------------------------------------
+    # Transition helper
+    # ------------------------------------------------------------------
+
+    def _do_transition(self, step: StepDef, target: str | None) -> None:
+        """
+        Route the FSM to `target` state, or to 'completed' if target is None.
+        Uses auto_transitions-generated to_{state}() methods so any valid state
+        name is reachable from any source without explicit transition declarations.
+        """
+        try:
+            if target:
+                getattr(self, f"to_{target}")()
+            else:
+                self.complete()
+        except (MachineError, AttributeError) as exc:
+            self._log("TRANSITION", OutputToken.build(
+                "urn:badbot:poc:log:transition_fsm_error",
+                {"step": step.name, "error": str(exc)},
+            ), step=step.name)
+            self.fail()
+
+    # ------------------------------------------------------------------
     # Execution loop
     # ------------------------------------------------------------------
 
@@ -185,7 +210,112 @@ class SequenceEngine:
 
         url = self.base_url + self._resolve(step.path)
         headers = self._resolve_dict(step.headers)
-        body = self._resolve_dict(step.body) if step.body else None
+        # for_each resolves body per-iteration inside its loop; skip early
+        # resolution to avoid referencing keys that the iteration will set.
+        body = self._resolve_dict(step.body) if (step.body and not step.for_each) else None
+
+        # ------------------------------------------------------------------
+        # For-each loop — iterate the step over a list of values, storing
+        # each into context before resolving and sending. on_status routing
+        # is evaluated per-iteration; first match exits the loop early.
+        # ------------------------------------------------------------------
+        if step.for_each:
+            fea = step.for_each
+            routed = False
+
+            for i, val in enumerate(fea.values):
+                self.session.context.store(fea.into, str(val))
+
+                iter_url = self.base_url + self._resolve(step.path)
+                iter_headers = self._resolve_dict(step.headers)
+                iter_body = self._resolve_dict(step.body) if step.body else None
+
+                try:
+                    response = self._send_request(step, iter_url, iter_headers, iter_body)
+                except httpx.RequestError as exc:
+                    self._log("REQUEST", OutputToken.build(
+                        "urn:badbot:poc:log:request_error",
+                        {"step": step.name, "error": str(exc)},
+                    ), step=step.name)
+                    self.fail()
+                    return
+
+                self._log("FOR_EACH", OutputToken.build(
+                    "urn:badbot:poc:log:for_each_iteration",
+                    {
+                        "n": str(i + 1),
+                        "total": str(len(fea.values)),
+                        "into": fea.into,
+                        "value": str(val),
+                        "method": step.method,
+                        "url": iter_url,
+                        "status_code": str(response.status_code),
+                    },
+                ), step=step.name)
+
+                # Extraction per iteration
+                if response.is_success and step.extract:
+                    try:
+                        body_json = response.json()
+                    except Exception:
+                        body_json = {}
+                    for ext in step.extract:
+                        matches = jsonpath_parse(ext.field).find(body_json)
+                        if not matches:
+                            self._log("EXTRACTION", OutputToken.build(
+                                "urn:badbot:poc:log:extraction_not_found",
+                                {"field": ext.field},
+                            ), step=step.name)
+                            self.fail()
+                            return
+                        value = matches[0].value
+                        if ext.transform:
+                            try:
+                                value = self._apply_transform(value, ext.transform)
+                                self._log("EXTRACTION", OutputToken.build(
+                                    "urn:badbot:poc:log:extraction_transform_ok",
+                                    {"key": ext.into, "transform": ext.transform},
+                                ), step=step.name)
+                            except Exception as exc:
+                                self._log("EXTRACTION", OutputToken.build(
+                                    "urn:badbot:poc:log:extraction_transform_failed",
+                                    {"transform": ext.transform, "error": str(exc)},
+                                ), step=step.name)
+                                self.fail()
+                                return
+                        else:
+                            self._log("EXTRACTION", OutputToken.build(
+                                "urn:badbot:poc:log:extraction_ok",
+                                {"key": ext.into},
+                            ), step=step.name)
+                        self.session.context.store(ext.into, value)
+
+                # Finding check per iteration
+                if step.expect_status is not None and response.status_code != step.expect_status:
+                    if step.finding_on_unexpected:
+                        fd = step.finding_on_unexpected
+                        params = {
+                            name: self.session.context.ref(key)
+                            for name, key in fd.params.items()
+                        }
+                        self.session.add_finding(Finding(
+                            severity=fd.severity,
+                            message=MessageRef.build(urn=fd.urn, params=params),
+                            step=step.name,
+                            state=self.state,
+                        ))
+
+                # on_status routing per iteration — first match exits the loop
+                if step.on_status:
+                    target = step.on_status.get(str(response.status_code))
+                    if target is not None:
+                        self._do_transition(step, target)
+                        routed = True
+                        break
+
+            if not routed:
+                self._do_transition(step, step.on_success)
+            return
 
         # ------------------------------------------------------------------
         # Repeat loop — used for probes that need multiple iterations
@@ -358,15 +488,11 @@ class SequenceEngine:
                     state=self.state,
                 ))
 
-        # State transition
-        try:
-            self.advance() if step.on_success else self.complete()
-        except MachineError as exc:
-            self._log("TRANSITION", OutputToken.build(
-                "urn:badbot:poc:log:transition_fsm_error",
-                {"step": step.name, "error": str(exc)},
-            ), step=step.name)
-            self.fail()
+        # State transition — on_status checked first, on_success as fallback
+        target = (step.on_status or {}).get(str(response.status_code))
+        if target is None:
+            target = step.on_success
+        self._do_transition(step, target)
 
     def _log(self, kind: str, token: OutputToken, step: str | None = None) -> None:
         self.session.record(LogEntry(

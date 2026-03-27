@@ -1,0 +1,80 @@
+name: workflow_bypass_probe
+description: >
+  S-08 — Workflow bypass: probes whether the checkout flow can be skipped
+  (confirm without any payment) or subverted (underpayment accepted as full
+  payment, then confirm succeeds on an underpaid cart).
+
+  Step routing uses on_status for conditional branching; for_each iterates
+  over probe amounts to find the server's minimum-payment enforcement boundary.
+
+steps:
+  - name: authenticate
+    method: POST
+    path: /oauth/token
+    body_format: form
+    body:
+      grant_type: client_credentials
+      client_id: client_app
+      client_secret: client_secret_123
+      scope: read:orders
+    extract:
+      - field: $.access_token
+        into: access_token
+    on_success: create_cart
+
+  - name: create_cart
+    method: POST
+    path: /shop/cart
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    extract:
+      - field: $.cart_id
+        into: cart_id
+    on_status:
+      "201": attempt_bypass
+    # no on_success: cart creation failure completes the sequence
+
+  - name: attempt_bypass
+    method: POST
+    path: /shop/cart/{ctx:cart_id}/confirm
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    expect_status: 402
+    finding_on_unexpected:
+      severity: CRITICAL
+      urn: urn:badbot:poc:msg:payment_bypass
+      params: {}
+    on_status:
+      "402": probe_underpayment
+    # on_status "201" has no entry -> complete() (bypass succeeded, finding recorded)
+
+  - name: probe_underpayment
+    method: POST
+    path: /shop/cart/{ctx:cart_id}/pay
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    body:
+      amount: "{ctx:probe_amount}"
+    for_each:
+      into: probe_amount
+      values: ["0.01", "1.00", "5.00"]
+    expect_status: 402
+    finding_on_unexpected:
+      severity: HIGH
+      urn: urn:badbot:poc:msg:underpayment_accepted
+      params: {}
+    on_status:
+      "200": confirm_after_underpayment
+    # all iterations returned 402 -> on_success (null) -> complete()
+
+  - name: confirm_after_underpayment
+    method: POST
+    path: /shop/cart/{ctx:cart_id}/confirm
+    headers:
+      Authorization: "Bearer {ctx:access_token}"
+    expect_status: 402
+    finding_on_unexpected:
+      severity: CRITICAL
+      urn: urn:badbot:poc:msg:payment_bypass
+      params: {}
+    # no on_success -> complete()

@@ -72,7 +72,7 @@ def get_user_orders(user_id: int, authorization: str = Header(...)):
 # OAuth mock data
 # ============================================================================
 
-JWT_SECRET = "poc-secret-not-for-production"
+JWT_SECRET = "poc-secret-not-for-production!!"  # padded to 32 bytes for HS256
 JWT_ALGORITHM = "HS256"
 
 OAUTH_CLIENTS = {
@@ -186,44 +186,53 @@ def api_admin(claims: dict = Depends(_require_token)):
 
 
 # ============================================================================
-# Mass assignment mock data
+# Workflow bypass endpoints (S-08)
+#
+# Vulnerability: POST /shop/cart/{id}/pay accepts any positive amount with no
+# minimum check. A client paying $0.01 is marked as "paid", allowing confirm
+# to succeed. The probe tests:
+#   1. Confirm without payment            -> must return 402
+#   2. Pay with $0.01 / $1.00 / $5.00    -> server should return 402; returns 200 (bug)
+#   3. Confirm after underpayment accepted -> must return 402; returns 200 (bug)
 # ============================================================================
 
-CATALOG_PRICE = 29.99
-
-CREATED_ORDERS: dict[int, dict] = {}
-_order_id_counter = 0
-
-
-class OrderRequest(BaseModel):
-    item: str
-    quantity: int
-    price_override: float | None = None
+CARTS: dict[str, dict] = {}
+_cart_counter = 0
+CART_TOTAL = 10.00
 
 
-@app.post("/api/orders", status_code=201)
-def create_order(req: OrderRequest, claims: dict = Depends(_require_token)):
-    global _order_id_counter
-    if "read:orders" not in claims.get("scope", "").split():
-        raise HTTPException(status_code=403, detail="Insufficient scope: read:orders required")
-    _order_id_counter += 1
-    order_id = _order_id_counter
-    # Intentional vulnerability: if price_override is present, the server uses it
-    # as effective_price rather than looking up the catalog price.
-    effective_price = req.price_override if req.price_override is not None else CATALOG_PRICE
-    order = {
-        "order_id": order_id,
-        "item": req.item,
-        "quantity": req.quantity,
-        "effective_price": effective_price,
-    }
-    CREATED_ORDERS[order_id] = order
-    return order
+class PayRequest(BaseModel):
+    amount: float
 
 
-@app.get("/api/orders/{order_id}")
-def get_order(order_id: int, claims: dict = Depends(_require_token)):
-    order = CREATED_ORDERS.get(order_id)
-    if order is None:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return order
+@app.post("/shop/cart", status_code=201)
+def create_cart(claims: dict = Depends(_require_token)):
+    global _cart_counter
+    _cart_counter += 1
+    cart_id = str(_cart_counter)
+    CARTS[cart_id] = {"cart_id": cart_id, "paid": False, "amount_paid": 0.0}
+    return {"cart_id": cart_id}
+
+
+@app.post("/shop/cart/{cart_id}/pay")
+def pay_cart(cart_id: str, req: PayRequest, claims: dict = Depends(_require_token)):
+    cart = CARTS.get(cart_id)
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    if req.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive")
+    # Intentional vulnerability: accepts any positive amount as full payment;
+    # never checks whether amount >= CART_TOTAL.
+    cart["paid"] = True
+    cart["amount_paid"] = req.amount
+    return {"cart_id": cart_id, "amount_paid": req.amount, "status": "paid"}
+
+
+@app.post("/shop/cart/{cart_id}/confirm")
+def confirm_cart(cart_id: str, claims: dict = Depends(_require_token)):
+    cart = CARTS.get(cart_id)
+    if not cart:
+        raise HTTPException(status_code=404, detail="Cart not found")
+    if not cart["paid"]:
+        raise HTTPException(status_code=402, detail="Payment required")
+    return {"cart_id": cart_id, "status": "confirmed", "amount_paid": cart["amount_paid"]}
