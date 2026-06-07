@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>badbot</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface-alt: #1c2128;
+      --border: #30363d;
+      --border-muted: #21262d;
+      --text: #e6edf3;
+      --muted: #7d8590;
+      --accent: #1f6feb;
+      --accent-bg: #0d419d;
+      --covered: #238636;
+      --covered-bg: #1a3629;
+      --finding: #da3633;
+      --finding-bg: #5e1512;
+      --warning: #d29922;
+      --warning-bg: #2b2006;
+      --radius: 6px;
+      --sidebar-w: 240px;
+      --nav-h: 52px;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 13px; height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    /* ── Navbar ─────────────────────────────────────────────────── */
+    nav {
+      height: var(--nav-h); background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 16px; gap: 20px; flex-shrink: 0;
+    }
+    .logo { font-weight: 700; font-size: 16px; letter-spacing: 0.3px; }
+    .logo em { color: var(--finding); font-style: normal; }
+    .nav-tabs { display: flex; gap: 2px; }
+    .nav-tab {
+      padding: 5px 12px; border-radius: var(--radius); cursor: pointer;
+      color: var(--muted); border: none; background: none; font-size: 13px;
+      transition: color 0.12s, background 0.12s;
+    }
+    .nav-tab:hover { color: var(--text); background: var(--surface-alt); }
+    .nav-tab.active { color: var(--text); background: var(--accent-bg); }
+    .nav-spacer { flex: 1; }
+    #session-count { font-size: 11px; color: var(--muted); }
+    .new-run-btn {
+      padding: 5px 12px; border-radius: var(--radius); cursor: pointer;
+      background: var(--accent-bg); border: 1px solid var(--accent); color: var(--text);
+      font-size: 12px; font-weight: 600; transition: background 0.12s;
+    }
+    .new-run-btn:hover { background: var(--accent); }
+    .live-badge {
+      display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 700;
+      color: var(--finding); letter-spacing: 0.5px; margin-left: 8px; vertical-align: middle;
+    }
+    .live-dot {
+      width: 7px; height: 7px; border-radius: 50%; background: var(--finding);
+      animation: live-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+    /* ── New Run modal ──────────────────────────────────────────── */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(1,4,9,0.7); z-index: 100;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .modal {
+      width: 440px; max-width: calc(100vw - 40px); max-height: calc(100vh - 80px);
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      display: flex; flex-direction: column; overflow: hidden;
+      box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+    }
+    .modal-header {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+    }
+    .modal-title { font-size: 13px; font-weight: 600; }
+    .modal-close {
+      background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px;
+      padding: 2px 7px; border-radius: 3px; transition: color 0.12s, background 0.12s;
+    }
+    .modal-close:hover { color: var(--text); background: var(--surface-alt); }
+    .modal-body { padding: 14px 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+    .form-row { display: flex; flex-direction: column; gap: 5px; }
+    .form-label { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.7px; }
+    .form-hint { font-size: 10px; color: var(--muted); line-height: 1.4; }
+    .form-input, .form-select {
+      background: var(--surface-alt); border: 1px solid var(--border); border-radius: var(--radius);
+      color: var(--text); font-size: 12px; padding: 7px 10px; font-family: inherit;
+    }
+    .form-input:focus, .form-select:focus { outline: none; border-color: var(--accent); }
+    .form-input::placeholder { color: var(--muted); }
+    .modal-footer {
+      padding: 12px 16px; border-top: 1px solid var(--border); flex-shrink: 0;
+      display: flex; align-items: center; gap: 8px; justify-content: flex-end;
+    }
+    .modal-error { font-size: 11px; color: var(--finding); flex: 1; }
+    .modal-btn-secondary, .modal-btn-primary {
+      padding: 6px 14px; border-radius: var(--radius); font-size: 12px; cursor: pointer;
+      transition: background 0.12s, border-color 0.12s; border: 1px solid transparent;
+    }
+    .modal-btn-secondary { background: none; border-color: var(--border); color: var(--muted); }
+    .modal-btn-secondary:hover { color: var(--text); border-color: var(--muted); }
+    .modal-btn-primary { background: var(--accent-bg); border-color: var(--accent); color: var(--text); font-weight: 600; }
+    .modal-btn-primary:hover { background: var(--accent); }
+    .modal-btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+    /* ── Layout ─────────────────────────────────────────────────── */
+    .layout { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ─────────────────────────────────────────────────── */
+    aside {
+      width: var(--sidebar-w); background: var(--surface); border-right: 1px solid var(--border);
+      display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0;
+    }
+    .sidebar-section { display: flex; flex-direction: column; overflow: hidden; }
+    .sidebar-section.grow { flex: 1; overflow-y: auto; }
+    .sidebar-heading {
+      font-size: 10px; font-weight: 600; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.9px;
+      padding: 10px 12px 6px; flex-shrink: 0;
+    }
+    .sidebar-divider { border-top: 1px solid var(--border-muted); }
+    .sidebar-item {
+      display: flex; align-items: center; gap: 8px; padding: 6px 12px;
+      cursor: pointer; border-left: 2px solid transparent;
+      transition: background 0.1s; min-width: 0;
+    }
+    .sidebar-item:hover { background: var(--surface-alt); }
+    .sidebar-item.active { background: var(--surface-alt); border-left-color: var(--accent); }
+    .si-main { flex: 1; overflow: hidden; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .si-name {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 12px; min-width: 0;
+    }
+    .si-time {
+      font-size: 10px; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .si-badge {
+      font-size: 10px; padding: 1px 5px; border-radius: 9px; flex-shrink: 0;
+      font-weight: 600;
+    }
+    .si-badge.ok { background: var(--covered-bg); color: var(--covered); }
+    .si-badge.err { background: var(--finding-bg); color: var(--finding); }
+    .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .status-dot.findings { background: var(--finding); }
+    .status-dot.completed { background: var(--covered); }
+
+    /* ── Main ────────────────────────────────────────────────────── */
+    main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+
+    /* ── Coverage view ──────────────────────────────────────────── */
+    #view-coverage {
+      flex: 1; overflow-y: auto; padding: 20px;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    .cv-header { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+    .cv-header-text { flex: 1; }
+    .cv-title { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+    .cv-subtitle { font-size: 11px; color: var(--muted); }
+    .cv-legend { display: flex; gap: 14px; flex-shrink: 0; }
+    .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); }
+    .legend-dot { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+    .matrix-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+    .technique-cell {
+      width: 155px; min-height: 84px; background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 10px 12px; cursor: pointer;
+      transition: border-color 0.12s, transform 0.1s;
+      display: flex; flex-direction: column; gap: 3px;
+    }
+    .technique-cell:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .technique-cell.covered { border-color: var(--covered); background: var(--covered-bg); }
+    .technique-cell.finding { border-color: var(--finding); background: var(--finding-bg); }
+    .tc-id { font-size: 12px; font-weight: 700; font-family: 'SF Mono', 'Consolas', monospace; }
+    .tc-owasp { font-size: 10px; color: var(--muted); }
+    .tc-conf { font-size: 10px; color: var(--warning); }
+    .tc-runs { font-size: 10px; margin-top: auto; padding-top: 4px; }
+    .tc-runs.finding { color: var(--finding); }
+    .tc-runs.covered { color: var(--covered); }
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      gap: 8px; color: var(--muted); padding: 60px 0;
+    }
+    .empty-hint { font-size: 11px; font-family: monospace; background: var(--surface); padding: 6px 12px; border-radius: var(--radius); }
+
+    /* ── Sequences view ──────────────────────────────────────────── */
+    #view-sequences { flex: 1; overflow-y: auto; padding: 20px; }
+    .seq-list { display: flex; flex-direction: column; gap: 8px; }
+    .seq-card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 14px 16px; cursor: pointer; transition: border-color 0.12s;
+    }
+    .seq-card:hover { border-color: var(--accent); }
+    .seq-card-name { font-size: 13px; font-weight: 600; font-family: 'SF Mono', 'Consolas', monospace; margin-bottom: 5px; }
+    .seq-card-desc { font-size: 11px; color: var(--muted); line-height: 1.5; margin-bottom: 8px; max-height: 36px; overflow: hidden; }
+    .tag-row { display: flex; gap: 5px; flex-wrap: wrap; }
+
+    /* ── Detail view ──────────────────────────────────────────────── */
+    #view-detail { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .detail-header {
+      padding: 10px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 10px; flex-shrink: 0; min-width: 0;
+    }
+    .back-btn {
+      padding: 4px 10px; border-radius: var(--radius); border: 1px solid var(--border);
+      background: none; color: var(--muted); cursor: pointer; font-size: 12px;
+      flex-shrink: 0; transition: color 0.12s, border-color 0.12s;
+    }
+    .back-btn:hover { color: var(--text); border-color: var(--muted); }
+    .detail-title-area { flex: 1; min-width: 0; }
+    .detail-title { font-size: 13px; font-weight: 600; font-family: 'SF Mono', 'Consolas', monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .detail-meta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .detail-tags { display: flex; gap: 5px; flex-wrap: wrap; flex-shrink: 0; max-width: 320px; }
+    .detail-body { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #cy { flex: 1; background: var(--bg); min-height: 160px; }
+
+    /* ── Log panel ────────────────────────────────────────────────── */
+    .log-panel { height: 220px; border-top: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+    .log-tabs {
+      display: flex; border-bottom: 1px solid var(--border);
+      padding: 0 12px; background: var(--surface); flex-shrink: 0;
+    }
+    .log-tab {
+      padding: 7px 12px; cursor: pointer; color: var(--muted);
+      border-bottom: 2px solid transparent; font-size: 12px;
+      transition: color 0.12s; margin-bottom: -1px; user-select: none;
+    }
+    .log-tab:hover { color: var(--text); }
+    .log-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+    .log-content { flex: 1; overflow-y: auto; padding: 8px 12px; }
+
+    /* ── Tags / badges ──────────────────────────────────────────── */
+    .ttp-tag {
+      font-size: 10px; padding: 2px 7px; border-radius: 9px;
+      background: var(--surface-alt); border: 1px solid var(--border);
+      color: var(--muted); font-family: 'SF Mono', 'Consolas', monospace;
+      white-space: nowrap;
+    }
+    .ttp-tag.covered { border-color: var(--covered); color: var(--covered); background: var(--covered-bg); }
+    .ttp-tag.finding { border-color: var(--finding); color: var(--finding); background: var(--finding-bg); }
+    .ttp-tag.partial { opacity: 0.7; }
+
+    /* ── Finding items ─────────────────────────────────────────── */
+    .finding-item {
+      background: var(--finding-bg); border: 1px solid rgba(218,54,51,0.3);
+      border-radius: var(--radius); padding: 8px 10px; margin-bottom: 6px;
+    }
+    .fi-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .sev-badge {
+      font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 3px; flex-shrink: 0;
+    }
+    .sev-badge.CRITICAL { background: #4a0f0e; color: #ffa198; border: 1px solid #8b2120; }
+    .sev-badge.HIGH { background: var(--finding-bg); color: var(--finding); border: 1px solid var(--finding); }
+    .sev-badge.MEDIUM { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); }
+    .sev-badge.LOW { background: var(--surface-alt); color: var(--muted); border: 1px solid var(--border); }
+    .fi-summary { font-size: 12px; font-weight: 500; }
+    .fi-step { font-size: 10px; color: var(--muted); font-family: monospace; margin-left: auto; flex-shrink: 0; }
+    .fi-detail { font-size: 11px; color: #b0b8c4; line-height: 1.55; margin-top: 4px; }
+    .fi-tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+
+    /* ── Log entries ─────────────────────────────────────────────── */
+    .log-entry {
+      display: flex; gap: 8px; padding: 3px 0;
+      font-size: 11px; font-family: 'SF Mono', 'Consolas', monospace;
+      border-bottom: 1px solid var(--border-muted);
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .le-time { color: var(--muted); flex-shrink: 0; width: 56px; }
+    .le-kind { flex-shrink: 0; width: 88px; }
+    .le-kind.TRANSITION { color: #79c0ff; }
+    .le-kind.REQUEST { color: #d2a8ff; }
+    .le-kind.EXTRACTION { color: var(--covered); }
+    .le-kind.FINDING { color: var(--finding); }
+    .le-step { color: var(--muted); flex-shrink: 0; width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .le-text { color: var(--text); flex: 1; word-break: break-word; }
+
+    /* ── Scrollbars ──────────────────────────────────────────────── */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  </style>
+</head>
+<body>
+  <nav>
+    <div class="logo">bad<em>bot</em></div>
+    <div class="nav-tabs">
+      <button class="nav-tab active" id="tab-nav-coverage" onclick="App.showView('coverage')">Coverage</button>
+      <button class="nav-tab" id="tab-nav-sequences" onclick="App.showView('sequences')">Sequences</button>
+    </div>
+    <div class="nav-spacer"></div>
+    <button class="new-run-btn" onclick="App.openNewRunModal()">▶ New Run</button>
+    <div id="session-count"></div>
+  </nav>
+
+  <div class="layout">
+    <aside>
+      <div class="sidebar-section grow">
+        <div class="sidebar-heading">Sessions</div>
+        <div id="sessions-list"></div>
+      </div>
+    </aside>
+
+    <main>
+      <!-- LOD1: Coverage matrix -->
+      <div id="view-coverage"></div>
+
+      <!-- Sequence browser -->
+      <div id="view-sequences" style="display:none;"></div>
+
+      <!-- LOD2 + LOD3: FSM + log -->
+      <div id="view-detail" style="display:none;">
+        <div class="detail-header">
+          <button class="back-btn" id="back-btn" onclick="App.goBack()">← Back</button>
+          <div class="detail-title-area">
+            <div class="detail-title" id="detail-title"></div>
+            <div class="detail-meta" id="detail-meta"></div>
+          </div>
+          <div class="detail-tags" id="detail-tags"></div>
+        </div>
+        <div class="detail-body">
+          <div id="cy"></div>
+          <div class="log-panel">
+            <div class="log-tabs">
+              <div class="log-tab active" id="ltab-findings" onclick="App.switchLogTab('findings')">Findings</div>
+              <div class="log-tab" id="ltab-log" onclick="App.switchLogTab('log')">Log</div>
+            </div>
+            <div class="log-content" id="log-content"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div class="modal-overlay" id="run-modal-overlay" style="display:none;" onclick="if (event.target === this) App.closeNewRunModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">▶ New Run</div>
+        <button class="modal-close" onclick="App.closeNewRunModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <label class="form-label">Sequence</label>
+          <select class="form-select" id="run-sequence" onchange="App._onRunSequenceChange()"></select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">Target URL</label>
+          <input class="form-input" id="run-target" type="text" placeholder="http://127.0.0.1:8000">
+        </div>
+        <div id="run-inputs"></div>
+      </div>
+      <div class="modal-footer">
+        <div class="modal-error" id="run-error"></div>
+        <button class="modal-btn-secondary" onclick="App.closeNewRunModal()">Cancel</button>
+        <button class="modal-btn-primary" onclick="App.submitNewRun()">▶ Launch</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+
+  <script>
+  const App = {
+    sessions: [],
+    coverage: [],
+    sequences: [],
+    currentView: 'coverage',
+    prevView: 'coverage',
+    activeSessionId: null,
+    currentSession: null,  // full session JSON (or a live run snapshot, same shape)
+    currentLogTab: 'findings',
+    cy: null,
+    _fsmStepNames: null,   // step-name fingerprint of the rendered FSM (for incremental updates)
+    liveRunId: null,
+    liveTimer: null,
+
+    async init() {
+      cytoscape.use(cytoscapeDagre);
+      await Promise.all([
+        this._fetch('/api/sessions').then(d => { this.sessions = d; }),
+        this._fetch('/api/coverage').then(d => { this.coverage = d; }),
+        this._fetch('/api/sequences').then(d => { this.sequences = d; }),
+      ]);
+      this._renderSidebar();
+      this._renderCoverage();
+      this._renderSequences();
+    },
+
+    async _fetch(url) {
+      try { return await (await fetch(url)).json(); } catch { return []; }
+    },
+
+    // ── View switching ───────────────────────────────────────────
+
+    showView(name) {
+      if (name !== 'detail') this.prevView = name;
+      if (name !== 'detail' && this.liveRunId) this._stopLiveRun();
+      this.currentView = name;
+      document.getElementById('view-coverage').style.display  = name === 'coverage'  ? 'flex'  : 'none';
+      document.getElementById('view-sequences').style.display = name === 'sequences' ? 'block' : 'none';
+      document.getElementById('view-detail').style.display    = name === 'detail'    ? 'flex'  : 'none';
+
+      document.getElementById('tab-nav-coverage').classList.toggle('active',
+        name === 'coverage' || (name === 'detail' && this.prevView === 'coverage'));
+      document.getElementById('tab-nav-sequences').classList.toggle('active',
+        name === 'sequences' || (name === 'detail' && this.prevView === 'sequences'));
+    },
+
+    goBack() {
+      this.showView(this.prevView);
+    },
+
+    // ── Sidebar ──────────────────────────────────────────────────
+
+    _renderSidebar() {
+      const el = document.getElementById('sessions-list');
+      const n = this.sessions.length;
+      document.getElementById('session-count').textContent = n ? `${n} session${n !== 1 ? 's' : ''}` : '';
+
+      if (!n) {
+        el.innerHTML = `<div style="padding:8px 12px;color:var(--muted);font-size:11px;line-height:1.6;">
+          No sessions yet.<br>
+          <span style="font-family:monospace;font-size:10px;">badbot run &lt;url&gt; &lt;seq&gt;<br>--save-session sessions/</span>
+        </div>`;
+        return;
+      }
+      el.innerHTML = this.sessions.map(s => {
+        const isFinding = s.status === 'findings';
+        const time = this._relTime(s.created_at);
+        const target = (s.target || '').replace(/^https?:\/\//, '');
+        return `<div class="sidebar-item" data-id="${s.id}" onclick="App.openSession('${s.id}')">
+          <div class="status-dot ${isFinding ? 'findings' : 'completed'}"></div>
+          <div class="si-main">
+            <div class="si-name" title="${this._esc(s.sequence_name)}">${this._esc(s.sequence_name)}</div>
+            <div class="si-time" title="${this._esc(s.target)}">${this._esc(time)}${target ? ` · ${this._esc(target)}` : ''}</div>
+          </div>
+          <div class="si-badge ${isFinding ? 'err' : 'ok'}">${isFinding ? s.finding_count : '✓'}</div>
+        </div>`;
+      }).join('');
+    },
+
+    _relTime(iso) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      const sameDay = d.toDateString() === new Date().toDateString();
+      return sameDay
+        ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    },
+
+    _setSidebarActive(id) {
+      document.querySelectorAll('#sessions-list .sidebar-item').forEach(el => {
+        el.classList.toggle('active', el.dataset.id === id);
+      });
+      this.activeSessionId = id;
+    },
+
+    // ── Coverage view ─────────────────────────────────────────────
+
+    _renderCoverage() {
+      const el = document.getElementById('view-coverage');
+      if (!this.coverage.length) {
+        el.innerHTML = `
+          <div class="cv-header">
+            <div class="cv-title">ATT&amp;CK Coverage Matrix</div>
+          </div>
+          <div class="empty-state">
+            <div>No sessions recorded yet.</div>
+            <div class="empty-hint">badbot run &lt;url&gt; &lt;seq.yaml&gt; --save-session sessions/</div>
+          </div>`;
+        return;
+      }
+      const sorted = [...this.coverage].sort((a, b) => {
+        if (a.owasp_alias && b.owasp_alias) return a.owasp_alias.localeCompare(b.owasp_alias);
+        if (a.owasp_alias) return -1;
+        if (b.owasp_alias) return 1;
+        return a.technique_id.localeCompare(b.technique_id);
+      });
+      const totalRuns = this.sessions.length;
+      el.innerHTML = `
+        <div class="cv-header">
+          <div class="cv-header-text">
+            <div class="cv-title">ATT&amp;CK Coverage Matrix</div>
+            <div class="cv-subtitle">${sorted.length} technique${sorted.length !== 1 ? 's' : ''} across ${totalRuns} run${totalRuns !== 1 ? 's' : ''}</div>
+          </div>
+          <div class="cv-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:var(--covered)"></div>Passed</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--finding)"></div>Finding</div>
+            <div class="legend-item"><div class="legend-dot" style="background:var(--warning)"></div>Partial</div>
+          </div>
+        </div>
+        <div class="matrix-grid">
+          ${sorted.map(t => this._techniqueCell(t)).join('')}
+        </div>`;
+    },
+
+    _techniqueCell(t) {
+      const cls = t.has_finding ? 'finding' : 'covered';
+      return `<div class="technique-cell ${cls}" onclick="App.drillTechnique('${t.key}')">
+        <div class="tc-id">${this._esc(t.key)}</div>
+        ${t.owasp_alias ? `<div class="tc-owasp">${this._esc(t.owasp_alias)}</div>` : ''}
+        ${t.confidence !== 'full' ? `<div class="tc-conf">${t.confidence}</div>` : ''}
+        <div class="tc-runs ${cls}">${t.run_count} run${t.run_count !== 1 ? 's' : ''}</div>
+      </div>`;
+    },
+
+    drillTechnique(key) {
+      const match = this.sessions.find(s =>
+        (s.ttp_mappings || []).some(m => (m.sub_technique_id ? `${m.technique_id}.${m.sub_technique_id}` : m.technique_id) === key)
+      );
+      if (match) this.openSession(match.id);
+    },
+
+    // ── Sequences view ────────────────────────────────────────────
+
+    _renderSequences() {
+      const el = document.getElementById('view-sequences');
+      if (!this.sequences.length) {
+        el.innerHTML = '<div class="empty-state"><div>No sequence files found.</div></div>';
+        return;
+      }
+      el.innerHTML = `<div class="seq-list">${this.sequences.map(s =>
+        `<div class="seq-card" onclick="App.openSequence('${this._esc(s.name)}')">
+          <div class="seq-card-name">${this._esc(s.name)}</div>
+          <div class="seq-card-desc">${this._esc((s.description || '').trim().slice(0, 160))}</div>
+          <div class="tag-row">${this._ttpTags(s.ttp_mappings || [], false)}</div>
+        </div>`).join('')}
+      </div>`;
+    },
+
+    // ── Session / sequence loading ────────────────────────────────
+
+    async openSession(id) {
+      this._stopLiveRun();
+      this._setSidebarActive(id);
+      const session = await this._fetch(`/api/sessions/${id}`);
+      if (!session || !session.id) return;
+      this.currentSession = session;
+      this.currentLogTab = 'findings';
+
+      document.getElementById('detail-title').textContent = session.sequence_name || '—';
+      const ts = session.created_at ? new Date(session.created_at).toLocaleString() : '';
+      const fc = (session.findings || []).length;
+      document.getElementById('detail-meta').textContent =
+        `${session.target || ''}  ·  ${ts}  ·  ${fc} finding${fc !== 1 ? 's' : ''}`;
+      document.getElementById('detail-tags').innerHTML =
+        this._ttpTags(session.ttp_mappings || [], fc > 0);
+
+      this.showView('detail');
+      this._renderLogPanel();
+      this._renderFSM(
+        (session.sequence || {}).steps || [],
+        session.visited_steps || [],
+        new Set((session.findings || []).map(f => f.step).filter(Boolean))
+      );
+    },
+
+    async openSequence(name) {
+      this._stopLiveRun();
+      const seq = await this._fetch(`/api/sequences/${name}`);
+      if (!seq || !seq.name) return;
+      this.currentSession = null;
+
+      document.getElementById('detail-title').textContent = seq.name;
+      document.getElementById('detail-meta').textContent =
+        `${(seq.step_names || seq.steps || []).length} steps`;
+      document.getElementById('detail-tags').innerHTML =
+        this._ttpTags(seq.ttp_mappings || [], false);
+
+      this.showView('detail');
+      this.currentLogTab = 'findings';
+      this._renderLogPanel();
+      this._renderFSM(seq.steps || [], [], new Set());
+    },
+
+    // ── New Run modal ─────────────────────────────────────────────
+
+    openNewRunModal() {
+      const sel = document.getElementById('run-sequence');
+      sel.innerHTML = this.sequences.map(s =>
+        `<option value="${this._esc(s.name)}">${this._esc(s.name)}</option>`).join('');
+      const targetField = document.getElementById('run-target');
+      if (!targetField.value) {
+        targetField.value = (this.sessions[0] && this.sessions[0].target) || 'http://127.0.0.1:8000';
+      }
+      document.getElementById('run-error').textContent = '';
+      this._onRunSequenceChange();
+      document.getElementById('run-modal-overlay').style.display = 'flex';
+    },
+
+    closeNewRunModal() {
+      document.getElementById('run-modal-overlay').style.display = 'none';
+    },
+
+    _onRunSequenceChange() {
+      const name = document.getElementById('run-sequence').value;
+      const seq = this.sequences.find(s => s.name === name);
+      const inputs = (seq && seq.inputs) || [];
+      const el = document.getElementById('run-inputs');
+      el.innerHTML = inputs.map(inp => `
+        <div class="form-row">
+          <label class="form-label">${this._esc(inp.name)}</label>
+          <input class="form-input" type="${inp.sensitive ? 'password' : 'text'}"
+                 id="run-input-${this._esc(inp.name)}" placeholder="${this._esc(inp.default)}">
+          ${inp.description ? `<div class="form-hint">${this._esc(inp.description)}</div>` : ''}
+        </div>`).join('');
+    },
+
+    async submitNewRun() {
+      const name = document.getElementById('run-sequence').value;
+      const target = document.getElementById('run-target').value.trim();
+      const errEl = document.getElementById('run-error');
+      errEl.textContent = '';
+      if (!name || !target) {
+        errEl.textContent = 'Pick a sequence and enter a target URL.';
+        return;
+      }
+
+      const seq = this.sequences.find(s => s.name === name);
+      const inputs = {};
+      for (const inp of (seq && seq.inputs) || []) {
+        const field = document.getElementById(`run-input-${inp.name}`);
+        const val = field ? field.value.trim() : '';
+        if (val) inputs[inp.name] = val;
+      }
+
+      const btn = document.querySelector('#run-modal-overlay .modal-btn-primary');
+      btn.disabled = true;
+      btn.textContent = 'Launching…';
+      try {
+        const res = await fetch('/api/runs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sequence_name: name, target, inputs }),
+        });
+        if (!res.ok) throw new Error(`server returned ${res.status}`);
+        const { id } = await res.json();
+        this.closeNewRunModal();
+        this._startLiveRun(id);
+      } catch (e) {
+        errEl.textContent = `Launch failed: ${e.message}`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '▶ Launch';
+      }
+    },
+
+    // ── Live run polling ──────────────────────────────────────────
+
+    _startLiveRun(runId) {
+      this._stopLiveRun();
+      this._setSidebarActive(null);
+      this.currentLogTab = 'log';
+      this.liveRunId = runId;
+      this._pollRun();
+      this.liveTimer = setInterval(() => this._pollRun(), 600);
+    },
+
+    _stopLiveRun() {
+      if (this.liveTimer) { clearInterval(this.liveTimer); this.liveTimer = null; }
+      this.liveRunId = null;
+    },
+
+    async _pollRun() {
+      const runId = this.liveRunId;
+      if (!runId) return;
+      const run = await this._fetch(`/api/runs/${runId}`);
+      if (!run || !run.id || this.liveRunId !== runId) return;
+
+      this.currentSession = run;
+      const live = run.status === 'running';
+      const ts = run.created_at ? new Date(run.created_at).toLocaleString() : '';
+      const fc = (run.findings || []).length;
+
+      document.getElementById('detail-title').innerHTML = this._esc(run.sequence_name || '—') +
+        (live ? '<span class="live-badge"><span class="live-dot"></span>LIVE</span>' : '');
+      document.getElementById('detail-meta').textContent =
+        `${run.target || ''}  ·  ${ts}  ·  ${fc} finding${fc !== 1 ? 's' : ''}  ·  ${run.status}`;
+      document.getElementById('detail-tags').innerHTML = this._ttpTags(run.ttp_mappings || [], fc > 0);
+
+      this.showView('detail');
+      this._renderLogPanel();
+      this._renderFSM(
+        (run.sequence || {}).steps || [],
+        run.visited_steps || [],
+        new Set((run.findings || []).map(f => f.step).filter(Boolean))
+      );
+
+      if (!live) {
+        this._stopLiveRun();
+        this._fetch('/api/sessions').then(d => { this.sessions = d; this._renderSidebar(); this._setSidebarActive(run.id); });
+        this._fetch('/api/coverage').then(d => { this.coverage = d; });
+      }
+    },
+
+    // ── Log panel ────────────────────────────────────────────────
+
+    switchLogTab(tab) {
+      this.currentLogTab = tab;
+      document.getElementById('ltab-findings').classList.toggle('active', tab === 'findings');
+      document.getElementById('ltab-log').classList.toggle('active', tab === 'log');
+      this._renderLogPanel();
+    },
+
+    _renderLogPanel(filterStep) {
+      const el = document.getElementById('log-content');
+      const session = this.currentSession;
+      if (!session) {
+        el.innerHTML = '<div style="color:var(--muted);font-size:11px;padding:6px 0;">Load a session to see findings and log.</div>';
+        return;
+      }
+      if (this.currentLogTab === 'findings') {
+        const findings = session.findings || [];
+        if (!findings.length) {
+          el.innerHTML = '<div style="color:var(--covered);font-size:11px;padding:6px 0;">✓ No findings — clean run.</div>';
+          return;
+        }
+        el.innerHTML = findings.map(f => `
+          <div class="finding-item">
+            <div class="fi-head">
+              <span class="sev-badge ${this._esc(f.severity)}">${this._esc(f.severity)}</span>
+              <span class="fi-summary">${this._esc(f.summary)}</span>
+              ${f.step ? `<span class="fi-step">${this._esc(f.step)}</span>` : ''}
+            </div>
+            <div class="fi-detail">${this._esc(f.detail)}</div>
+            ${(f.ttp_refs || []).length ? `<div class="fi-tags">${this._ttpTags(f.ttp_refs, true)}</div>` : ''}
+          </div>`).join('');
+      } else {
+        let log = session.log || [];
+        if (filterStep) log = log.filter(e => e.step === filterStep);
+        if (!log.length) {
+          el.innerHTML = `<div style="color:var(--muted);font-size:11px;padding:6px 0;">${filterStep ? `No log entries for step "${this._esc(filterStep)}".` : 'No log entries.'}</div>`;
+          return;
+        }
+        const prefix = filterStep
+          ? `<div style="color:var(--accent);font-size:11px;padding:3px 0 8px;">Filter: step = ${this._esc(filterStep)} <span onclick="App._renderLogPanel()" style="cursor:pointer;color:var(--muted);margin-left:8px;">✕ clear</span></div>`
+          : '';
+        el.innerHTML = prefix + log.map(e => {
+          const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
+          return `<div class="log-entry">
+            <div class="le-time">${ts}</div>
+            <div class="le-kind ${this._esc(e.kind)}">${this._esc(e.kind)}</div>
+            <div class="le-step" title="${this._esc(e.step||'')}">${this._esc(e.step||'')}</div>
+            <div class="le-text">${this._esc(e.text||'')}</div>
+          </div>`;
+        }).join('');
+      }
+    },
+
+    // ── FSM renderer (Cytoscape / dagre) ─────────────────────────
+
+    _renderFSM(steps, visitedSteps, findingSteps) {
+      const visited = new Set(visitedSteps);
+
+      // Incremental path: same FSM already laid out (e.g. a live-run poll) —
+      // just refresh node states in place rather than destroying/re-laying-out
+      // the graph, which would jitter on every ~600ms tick.
+      if (this.cy && this._fsmStepNames && steps.length === this._fsmStepNames.length &&
+          steps.every((s, i) => s.name === this._fsmStepNames[i])) {
+        this.cy.batch(() => {
+          for (const s of steps) {
+            const state = findingSteps.has(s.name) ? 'finding' : (visited.has(s.name) ? 'visited' : 'default');
+            this.cy.getElementById(s.name).data('state', state);
+          }
+        });
+        return;
+      }
+
+      if (this.cy) { this.cy.destroy(); this.cy = null; }
+      this._fsmStepNames = steps.map(s => s.name);
+      const container = document.getElementById('cy');
+      if (!steps.length) {
+        container.innerHTML = '<div class="empty-state" style="height:100%;">No steps defined.</div>';
+        return;
+      }
+      container.innerHTML = '';
+
+      const nodes = [];
+      const edges = [];
+
+      // Terminal nodes
+      nodes.push({ data: { id: '__start__', label: '▶', nodeType: 'terminal' } });
+      nodes.push({ data: { id: '__end__',   label: '■', nodeType: 'terminal' } });
+
+      // Step nodes
+      for (const s of steps) {
+        const isVisited  = visited.has(s.name);
+        const isFinding  = findingSteps.has(s.name);
+        let loopAnnot = '';
+        if (s.repeat)    loopAnnot = `×${s.repeat}`;
+        else if (s.for_each) loopAnnot = `∀ ${s.for_each.into || s.for_each.values?.length}`;
+
+        const abbrevPath = (s.path || '').length > 28 ? (s.path || '').slice(0, 26) + '…' : (s.path || '');
+        const label = `${s.name}${loopAnnot ? '\n' + loopAnnot : ''}\n${s.method || ''} ${abbrevPath}`;
+
+        nodes.push({ data: {
+          id: s.name,
+          label,
+          nodeType: 'step',
+          state: isFinding ? 'finding' : (isVisited ? 'visited' : 'default'),
+        }});
+      }
+
+      // Edges: START → first step
+      edges.push({ data: { id: 'e_start', source: '__start__', target: steps[0].name, label: '' } });
+
+      // Edges between steps
+      const hasOnSuccess = new Set();
+      for (const s of steps) {
+        if (s.on_success) {
+          edges.push({ data: { id: `e_${s.name}_ok`, source: s.name, target: s.on_success, label: '✓' } });
+          hasOnSuccess.add(s.name);
+        }
+        const onStatus = s.on_status || {};
+        for (const [code, target] of Object.entries(onStatus)) {
+          if (target) {
+            edges.push({ data: { id: `e_${s.name}_${code}`, source: s.name, target, label: code } });
+          }
+        }
+        // If no on_success: can reach END (404/402 fall-through, or explicit terminal)
+        if (!hasOnSuccess.has(s.name)) {
+          edges.push({ data: { id: `e_${s.name}_end`, source: s.name, target: '__end__', label: '' } });
+        }
+      }
+
+      this.cy = cytoscape({
+        container,
+        elements: [...nodes, ...edges],
+        style: [
+          {
+            selector: 'node[nodeType="step"]',
+            style: {
+              'background-color': '#1c2128',
+              'border-color': '#30363d',
+              'border-width': 1.5,
+              'color': '#e6edf3',
+              'label': 'data(label)',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'font-size': 9,
+              'font-family': "'SF Mono', 'Consolas', monospace",
+              'shape': 'roundrectangle',
+              'text-wrap': 'wrap',
+              'text-max-width': 140,
+              'width': 'label',
+              'height': 'label',
+              'padding': '10px',
+            },
+          },
+          {
+            selector: 'node[nodeType="step"][state="visited"]',
+            style: {
+              'background-color': '#0d2d6e',
+              'border-color': '#1f6feb',
+              'border-width': 2,
+              'color': '#79c0ff',
+            },
+          },
+          {
+            selector: 'node[nodeType="step"][state="finding"]',
+            style: {
+              'background-color': '#3d0d0c',
+              'border-color': '#da3633',
+              'border-width': 2,
+              'color': '#ffa198',
+            },
+          },
+          {
+            selector: 'node[nodeType="terminal"]',
+            style: {
+              'background-color': '#21262d',
+              'border-color': '#484f58',
+              'border-width': 1,
+              'color': '#7d8590',
+              'label': 'data(label)',
+              'text-valign': 'center',
+              'text-halign': 'center',
+              'font-size': 10,
+              'shape': 'ellipse',
+              'width': 28,
+              'height': 28,
+            },
+          },
+          {
+            selector: 'edge',
+            style: {
+              'line-color': '#30363d',
+              'target-arrow-color': '#484f58',
+              'target-arrow-shape': 'triangle',
+              'curve-style': 'bezier',
+              'label': 'data(label)',
+              'font-size': 8,
+              'font-family': "'SF Mono', 'Consolas', monospace",
+              'color': '#7d8590',
+              'text-background-color': '#0d1117',
+              'text-background-opacity': 1,
+              'text-background-padding': '2px',
+              'width': 1,
+              'arrow-scale': 0.7,
+            },
+          },
+        ],
+        layout: {
+          name: 'dagre',
+          rankDir: 'LR',
+          nodeSep: 30,
+          rankSep: 70,
+          edgeSep: 10,
+          padding: 24,
+          animate: false,
+        },
+        userZoomingEnabled: true,
+        userPanningEnabled: true,
+        boxSelectionEnabled: false,
+        minZoom: 0.3,
+        maxZoom: 3,
+      });
+
+      // Click a step node → filter log to that step
+      this.cy.on('tap', 'node[nodeType="step"]', (evt) => {
+        if (!this.currentSession) return;
+        const stepName = evt.target.id();
+        this.currentLogTab = 'log';
+        document.getElementById('ltab-findings').classList.remove('active');
+        document.getElementById('ltab-log').classList.add('active');
+        this._renderLogPanel(stepName);
+      });
+    },
+
+    // ── Helpers ───────────────────────────────────────────────────
+
+    _ttpTags(mappings, isFinding) {
+      return (mappings || []).map(m => {
+        const key = m.sub_technique_id ? `${m.technique_id}.${m.sub_technique_id}` : m.technique_id;
+        const label = m.owasp_alias ? `${key} · ${m.owasp_alias}` : key;
+        const cls = isFinding ? 'finding' : 'covered';
+        const partialCls = m.confidence !== 'full' ? ' partial' : '';
+        return `<span class="ttp-tag ${cls}${partialCls}">${this._esc(label)}</span>`;
+      }).join('');
+    },
+
+    _esc(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    },
+  };
+
+  App.init();
+  </script>
+</body>
+</html>
