@@ -76,6 +76,17 @@ class TTPMappingDef:
 
 
 @dataclass
+class InputDef:
+    """A declared, overridable parameter. Seeded into the context store
+    before execution so steps can reference it via the existing {ctx:name}
+    syntax — no separate resolution path required."""
+    name: str
+    default: str
+    description: str = ""
+    sensitive: bool = False    # UI hint: mask the field (e.g. secrets)
+
+
+@dataclass
 class StepDef:
     name: str
     method: str
@@ -100,6 +111,19 @@ class SequenceDef:
     description: str
     steps: list[StepDef]
     ttp_mappings: list[TTPMappingDef] = field(default_factory=list)
+    inputs: list[InputDef] = field(default_factory=list)
+
+
+def seed_inputs(session: Session, sequence: SequenceDef, overrides: dict[str, str] | None = None) -> None:
+    """
+    Store each declared input's value (override if provided, else its default)
+    in the context store before execute() runs. Steps reference these via the
+    same {ctx:name} placeholders used for extracted values — no new resolution
+    path needed. Must be called before SequenceEngine.execute().
+    """
+    overrides = overrides or {}
+    for inp in sequence.inputs:
+        session.context.store(inp.name, overrides.get(inp.name, inp.default))
 
 
 # ---------------------------------------------------------------------------
@@ -217,11 +241,22 @@ class SequenceEngine:
             {"step": step.name},
         ), step=step.name)
 
-        url = self.base_url + self._resolve(step.path)
-        headers = self._resolve_dict(step.headers)
-        # for_each resolves body per-iteration inside its loop; skip early
-        # resolution to avoid referencing keys that the iteration will set.
-        body = self._resolve_dict(step.body) if (step.body and not step.for_each) else None
+        try:
+            url = self.base_url + self._resolve(step.path)
+            headers = self._resolve_dict(step.headers)
+            # for_each resolves body per-iteration inside its loop; skip early
+            # resolution to avoid referencing keys that the iteration will set.
+            body = self._resolve_dict(step.body) if (step.body and not step.for_each) else None
+        except KeyError as exc:
+            # A prior step's expect_status mismatched (e.g. bad credentials),
+            # so an expected extraction never ran — the value this step
+            # references was never stored. Halt rather than crash the run.
+            self._log("TRANSITION", OutputToken.build(
+                "urn:badbot:poc:log:transition_fsm_error",
+                {"step": step.name, "error": f"unresolved context reference: {exc}"},
+            ), step=step.name)
+            self.fail()
+            return
 
         # ------------------------------------------------------------------
         # For-each loop — iterate the step over a list of values, storing

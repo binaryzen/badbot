@@ -12,6 +12,15 @@ ttp_mappings:
     owasp_alias: "API6:2023"
     confidence: full
 
+inputs:
+  - name: client_id
+    default: client_app
+    description: OAuth client_credentials client ID
+  - name: client_secret
+    default: client_secret_123
+    description: OAuth client_credentials client secret
+    sensitive: true
+
 steps:
   - name: authenticate
     method: POST
@@ -19,8 +28,8 @@ steps:
     body_format: form
     body:
       grant_type: client_credentials
-      client_id: client_app
-      client_secret: client_secret_123
+      client_id: "{ctx:client_id}"
+      client_secret: "{ctx:client_secret}"
       scope: read:orders
     extract:
       - field: $.access_token

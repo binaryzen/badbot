@@ -9,13 +9,22 @@ ttp_mappings:
     owasp_alias: "API1:2023"
     confidence: full
 
+inputs:
+  - name: username
+    default: alice
+    description: Account to authenticate as (probes whether its token can reach other users' resources)
+  - name: password
+    default: password123
+    description: Password for the account
+    sensitive: true
+
 steps:
   - name: authenticate
     method: POST
     path: /auth
     body:
-      username: alice
-      password: password123
+      username: "{ctx:username}"
+      password: "{ctx:password}"
     extract:
       - field: "$.token"
         into: auth_token

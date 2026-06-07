@@ -4,38 +4,140 @@ C-13/C-14 — CLI entry point (minimal POC implementation)
 Subcommands:
     run      Execute a sequence against a target
     decrypt  Recover and display a session archive
+    ui       Start the visualization UI server
 
 Usage:
     python -m badbot run <target_url> <sequence_file> [options]
     python -m badbot decrypt <archive> [--key <keyfile>]
-                        Session ID is read from the plaintext archive prefix.
+    python -m badbot ui [--sessions DIR] [--sequences DIR] [--port N]
 
 Run options:
-    --clear-context     Resolve context refs in log output (default: tokenized/opaque)
-    --output <file>     Write AES-GCM encrypted session archive to <file>
-                        Decryption key written to <file>.key
+    --clear-context       Resolve context refs in log output (default: tokenized/opaque)
+    --output <file>       Write AES-GCM encrypted session archive to <file>
+    --save-session <dir>  Write unencrypted session JSON to <dir>/<session-id>.json
 
 Examples:
     python -m badbot run http://localhost:8000 sequences/auth_bola_probe.yaml
-    python -m badbot run http://localhost:8000 sequences/auth_bola_probe.yaml --clear-context
-    python -m badbot run http://localhost:8000 sequences/auth_bola_probe.yaml --output run.enc
+    python -m badbot run http://localhost:8000 sequences/auth_bola_probe.yaml --save-session sessions/
     python -m badbot decrypt run.enc
-    python -m badbot decrypt run.enc --key run.enc.key
+    python -m badbot ui --sessions sessions/ --sequences sequences/
 """
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 import yaml
 
 from .messages import render, render_token
 from .output import decrypt_session, encrypt_session, render_finding_dict, render_token_dict
-from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, ForEachDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef, TTPMappingDef
+from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, ForEachDef, InputDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef, TTPMappingDef, seed_inputs
 from .session import Session
 
 
 # ---------------------------------------------------------------------------
 # Sequence loader
+# ---------------------------------------------------------------------------
+
+def _step_to_dict(s: StepDef) -> dict:
+    return {
+        "name": s.name,
+        "method": s.method,
+        "path": s.path,
+        "on_success": s.on_success,
+        "on_status": s.on_status or {},
+        "repeat": s.repeat,
+        "for_each": {"into": s.for_each.into, "values": list(s.for_each.values)} if s.for_each else None,
+        "expect_status": s.expect_status,
+    }
+
+
+def save_session_json(session: Session, sequence: SequenceDef, save_dir: str) -> None:
+    """Write a rendered session summary JSON to save_dir/<session-id>.json.
+
+    Must be called before session.close() — resolves context refs while store is live.
+    """
+    out_dir = Path(save_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    findings_out = []
+    for finding in session.findings:
+        rendered = render(finding.message, session.context)
+        findings_out.append({
+            "id": finding.id,
+            "severity": finding.severity,
+            "step": finding.step,
+            "timestamp": finding.timestamp.isoformat(),
+            "summary": rendered["summary"],
+            "detail": rendered["detail"],
+            "ttp_refs": [
+                {
+                    "technique_id": m.technique_id,
+                    "sub_technique_id": m.sub_technique_id,
+                    "owasp_alias": m.owasp_alias,
+                    "confidence": m.confidence,
+                }
+                for m in finding.ttp_refs
+            ],
+        })
+
+    log_out = []
+    visited_steps: list[str] = []
+    for entry in session.log:
+        text = render_token(entry.message, session.context, clear=True)
+        log_out.append({
+            "id": entry.id,
+            "timestamp": entry.timestamp.isoformat(),
+            "kind": entry.kind,
+            "step": entry.step,
+            "text": text,
+        })
+        if entry.kind == "TRANSITION" and entry.step and entry.step not in visited_steps:
+            visited_steps.append(entry.step)
+
+    inputs_used = {}
+    for inp in sequence.inputs:
+        try:
+            value = str(session.context.value(session.context.ref(inp.name)))
+        except KeyError:
+            value = inp.default
+        inputs_used[inp.name] = "•" * len(value) if inp.sensitive else value
+
+    data = {
+        "id": session.id,
+        "sequence_name": sequence.name,
+        "target": session.target,
+        "created_at": session.created_at.isoformat(),
+        "status": "findings" if session.findings else "completed",
+        "ttp_mappings": [
+            {
+                "technique_id": m.technique_id,
+                "sub_technique_id": m.sub_technique_id,
+                "owasp_alias": m.owasp_alias,
+                "confidence": m.confidence,
+            }
+            for m in sequence.ttp_mappings
+        ],
+        "findings": findings_out,
+        "log": log_out,
+        "visited_steps": visited_steps,
+        "inputs_used": inputs_used,
+        "sequence": {
+            "name": sequence.name,
+            "description": sequence.description,
+            "steps": [_step_to_dict(s) for s in sequence.steps],
+        },
+    }
+
+    out_path = out_dir / f"{session.id}.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    print(f"Session saved : {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Sequence YAML loader
 # ---------------------------------------------------------------------------
 
 def load_sequence(path: str) -> SequenceDef:
@@ -115,16 +217,45 @@ def load_sequence(path: str) -> SequenceDef:
         for m in data.get("ttp_mappings", [])
     ]
 
-    return SequenceDef(name=data["name"], description=data["description"], steps=steps, ttp_mappings=ttp_mappings)
+    inputs = [
+        InputDef(
+            name=i["name"],
+            default=i["default"],
+            description=i.get("description", ""),
+            sensitive=i.get("sensitive", False),
+        )
+        for i in data.get("inputs", [])
+    ]
+
+    return SequenceDef(
+        name=data["name"],
+        description=data["description"],
+        steps=steps,
+        ttp_mappings=ttp_mappings,
+        inputs=inputs,
+    )
 
 
 # ---------------------------------------------------------------------------
 # 'run' subcommand
 # ---------------------------------------------------------------------------
 
+def _parse_input_overrides(raw: list[str]) -> dict[str, str]:
+    overrides = {}
+    for kv in raw:
+        if "=" not in kv:
+            print(f"error: --input must be KEY=VALUE, got: {kv!r}", file=sys.stderr)
+            sys.exit(2)
+        key, value = kv.split("=", 1)
+        overrides[key] = value
+    return overrides
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     session = Session(target=args.target)
     sequence = load_sequence(args.sequence)
+    overrides = _parse_input_overrides(args.inputs)
+    seed_inputs(session, sequence, overrides)
     engine = SequenceEngine(sequence=sequence, session=session, base_url=args.target)
 
     print(f"Session : {session.id}")
@@ -132,9 +263,19 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"Target  : {args.target}")
     mode_label = "clear" if args.clear_context else "tokenized"
     print(f"Output  : {mode_label}")
+    if sequence.inputs:
+        for inp in sequence.inputs:
+            value = overrides.get(inp.name, inp.default)
+            shown = "•" * len(value) if inp.sensitive else value
+            print(f"Input   : {inp.name} = {shown}")
     print()
 
     engine.execute()
+
+    # Unencrypted session JSON for UI — must happen before session.close()
+    if args.save_session:
+        save_session_json(session, sequence, args.save_session)
+        print()
 
     # Encrypted archive — must happen before session.close() wipes context
     if args.output:
@@ -242,6 +383,30 @@ def cmd_decrypt(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 'ui' subcommand
+# ---------------------------------------------------------------------------
+
+def cmd_ui(args: argparse.Namespace) -> None:
+    try:
+        import uvicorn
+    except ImportError:
+        print("error: uvicorn is required for the UI server — pip install uvicorn", file=sys.stderr)
+        sys.exit(1)
+
+    sessions_dir = args.sessions or "sessions"
+    sequences_dir = args.sequences or "sequences"
+    os.environ["BADBOT_SESSIONS_DIR"] = sessions_dir
+    os.environ["BADBOT_SEQUENCES_DIR"] = sequences_dir
+
+    url = f"http://{args.host}:{args.port}"
+    print(f"badbot UI        : {url}")
+    print(f"Sessions dir     : {sessions_dir}")
+    print(f"Sequences dir    : {sequences_dir}")
+    print()
+    uvicorn.run("badbot.ui_server:app", host=args.host, port=args.port, reload=False)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -268,6 +433,20 @@ def main() -> None:
         default=None,
         help="Write AES-GCM encrypted session archive to FILE",
     )
+    p_run.add_argument(
+        "--save-session",
+        metavar="DIR",
+        default=None,
+        help="Write session summary JSON to DIR/<session-id>.json (used by UI)",
+    )
+    p_run.add_argument(
+        "--input",
+        metavar="KEY=VALUE",
+        action="append",
+        default=[],
+        dest="inputs",
+        help="Override a declared sequence input (repeatable): --input client_id=other_app",
+    )
 
     # -- decrypt --
     p_dec = sub.add_parser("decrypt", help="Recover and display a session archive")
@@ -285,9 +464,37 @@ def main() -> None:
         help="Decrypt token stream only; context refs shown as <ref:key> (context snapshot not decrypted)",
     )
 
+    # -- ui --
+    p_ui = sub.add_parser("ui", help="Start the visualization UI server")
+    p_ui.add_argument(
+        "--sessions",
+        metavar="DIR",
+        default=None,
+        help="Directory containing session JSON files (default: sessions/)",
+    )
+    p_ui.add_argument(
+        "--sequences",
+        metavar="DIR",
+        default=None,
+        help="Directory containing sequence YAML files (default: sequences/)",
+    )
+    p_ui.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Bind host (default: 127.0.0.1)",
+    )
+    p_ui.add_argument(
+        "--port",
+        type=int,
+        default=7337,
+        help="Bind port (default: 7337)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "run":
         cmd_run(args)
     elif args.command == "decrypt":
         cmd_decrypt(args)
+    elif args.command == "ui":
+        cmd_ui(args)
