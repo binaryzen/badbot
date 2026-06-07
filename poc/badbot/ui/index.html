@@ -149,9 +149,11 @@
     }
     .si-badge.ok { background: var(--covered-bg); color: var(--covered); }
     .si-badge.err { background: var(--finding-bg); color: var(--finding); }
+    .si-badge.warn { background: var(--warning-bg); color: var(--warning); }
     .status-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
     .status-dot.findings { background: var(--finding); }
     .status-dot.completed { background: var(--covered); }
+    .status-dot.blocked { background: var(--warning); }
 
     /* ── Main ────────────────────────────────────────────────────── */
     main { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
@@ -434,16 +436,25 @@
         return;
       }
       el.innerHTML = this.sessions.map(s => {
+        // Three outcomes, not two: a "completed" run with no findings is a
+        // meaningful clean pass, but a "blocked" run never got far enough to
+        // mean anything — its empty findings list is inconclusive, not clean.
+        // See Session.outcome / save_session_json's status derivation.
         const isFinding = s.status === 'findings';
+        const isBlocked = s.status === 'blocked';
+        const dotClass  = isFinding ? 'findings' : (isBlocked ? 'blocked' : 'completed');
+        const badgeCls  = isFinding ? 'err' : (isBlocked ? 'warn' : 'ok');
+        const badgeText = isFinding ? s.finding_count : (isBlocked ? '⊘' : '✓');
+        const badgeTitle = isBlocked ? 'Blocked — probe halted before completing; results are inconclusive' : '';
         const time = this._relTime(s.created_at);
         const target = (s.target || '').replace(/^https?:\/\//, '');
         return `<div class="sidebar-item" data-id="${s.id}" onclick="App.openSession('${s.id}')">
-          <div class="status-dot ${isFinding ? 'findings' : 'completed'}"></div>
+          <div class="status-dot ${dotClass}" title="${this._esc(badgeTitle)}"></div>
           <div class="si-main">
             <div class="si-name" title="${this._esc(s.sequence_name)}">${this._esc(s.sequence_name)}</div>
             <div class="si-time" title="${this._esc(s.target)}">${this._esc(time)}${target ? ` · ${this._esc(target)}` : ''}</div>
           </div>
-          <div class="si-badge ${isFinding ? 'err' : 'ok'}">${isFinding ? s.finding_count : '✓'}</div>
+          <div class="si-badge ${badgeCls}" title="${this._esc(badgeTitle)}">${badgeText}</div>
         </div>`;
       }).join('');
     },
@@ -550,8 +561,9 @@
       document.getElementById('detail-title').textContent = session.sequence_name || '—';
       const ts = session.created_at ? new Date(session.created_at).toLocaleString() : '';
       const fc = (session.findings || []).length;
+      const statusNote = session.status === 'blocked' ? '  ·  ⊘ blocked (inconclusive)' : '';
       document.getElementById('detail-meta').textContent =
-        `${session.target || ''}  ·  ${ts}  ·  ${fc} finding${fc !== 1 ? 's' : ''}`;
+        `${session.target || ''}  ·  ${ts}  ·  ${fc} finding${fc !== 1 ? 's' : ''}${statusNote}`;
       document.getElementById('detail-tags').innerHTML =
         this._ttpTags(session.ttp_mappings || [], fc > 0);
 
@@ -683,8 +695,9 @@
 
       document.getElementById('detail-title').innerHTML = this._esc(run.sequence_name || '—') +
         (live ? '<span class="live-badge"><span class="live-dot"></span>LIVE</span>' : '');
+      const statusLabel = run.status === 'blocked' ? '⊘ blocked (inconclusive)' : run.status;
       document.getElementById('detail-meta').textContent =
-        `${run.target || ''}  ·  ${ts}  ·  ${fc} finding${fc !== 1 ? 's' : ''}  ·  ${run.status}`;
+        `${run.target || ''}  ·  ${ts}  ·  ${fc} finding${fc !== 1 ? 's' : ''}  ·  ${statusLabel}`;
       document.getElementById('detail-tags').innerHTML = this._ttpTags(run.ttp_mappings || [], fc > 0);
 
       this.showView('detail');
@@ -721,7 +734,21 @@
       if (this.currentLogTab === 'findings') {
         const findings = session.findings || [];
         if (!findings.length) {
-          el.innerHTML = '<div style="color:var(--covered);font-size:11px;padding:6px 0;">✓ No findings — clean run.</div>';
+          // An empty findings list means something different depending on whether
+          // the probe actually completed its path — "blocked" means it halted
+          // early (bad parameters, broken assumption, unreachable target), so
+          // there's nothing to conclude from the absence of findings.
+          if (session.status === 'blocked') {
+            el.innerHTML = `<div style="color:var(--warning);font-size:11px;padding:6px 0;line-height:1.6;">
+              ⊘ Blocked — the probe halted before completing its intended path.<br>
+              No findings were recorded, but that's <em>inconclusive</em>, not clean —
+              it never got far enough to test what it was meant to test.
+              Check the Log tab for where it stopped (often a parameter or
+              environment mismatch).
+            </div>`;
+          } else {
+            el.innerHTML = '<div style="color:var(--covered);font-size:11px;padding:6px 0;">✓ No findings — clean run.</div>';
+          }
           return;
         }
         el.innerHTML = findings.map(f => `

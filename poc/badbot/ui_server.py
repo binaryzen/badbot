@@ -322,7 +322,15 @@ def _finalize_run(run_id, session, sequence) -> None:
     with _runs_lock:
         run = _runs[run_id]
         if run["status"] == "running":
-            run["status"] = "findings" if session.findings else "completed"
+            # Mirrors save_session_json's status derivation — "blocked" means
+            # the probe halted before its terminal state, so an empty findings
+            # list is inconclusive rather than a clean result. See Session.outcome.
+            if session.outcome != "completed":
+                run["status"] = "blocked"
+            elif session.findings:
+                run["status"] = "findings"
+            else:
+                run["status"] = "completed"
     try:
         save_session_json(session, sequence, str(_SESSIONS_DIR))
     finally:

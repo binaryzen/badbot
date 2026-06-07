@@ -96,6 +96,17 @@ def save_session_json(session: Session, sequence: SequenceDef, save_dir: str) ->
         if entry.kind == "TRANSITION" and entry.step and entry.step not in visited_steps:
             visited_steps.append(entry.step)
 
+    # "blocked" takes precedence over "findings": a probe that didn't reach its
+    # terminal state can't be trusted to have actually looked for what it was
+    # checking — any findings it recorded en route are still real, but an empty
+    # findings list means "inconclusive", not "clean". See Session.outcome.
+    if session.outcome != "completed":
+        status = "blocked"
+    elif session.findings:
+        status = "findings"
+    else:
+        status = "completed"
+
     inputs_used = {}
     for inp in sequence.inputs:
         try:
@@ -109,7 +120,7 @@ def save_session_json(session: Session, sequence: SequenceDef, save_dir: str) ->
         "sequence_name": sequence.name,
         "target": session.target,
         "created_at": session.created_at.isoformat(),
-        "status": "findings" if session.findings else "completed",
+        "status": status,
         "ttp_mappings": [
             {
                 "technique_id": m.technique_id,

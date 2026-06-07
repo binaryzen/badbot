@@ -48,6 +48,12 @@ class Session:
         self.context = ContextStore()
         self.log: list[LogEntry] = []
         self.findings: list[Finding] = []
+        # Set by SequenceEngine.execute() once the FSM reaches a terminal state:
+        # "completed" if the probe ran its full intended path, "blocked" if it
+        # halted early (bad parameters, unreachable target, broken assumption
+        # about the workflow). An empty findings list means something different
+        # in each case — "clean" only if the probe actually got to look.
+        self.outcome: str | None = None
 
     def record(self, entry: LogEntry) -> None:
         self.log.append(entry)

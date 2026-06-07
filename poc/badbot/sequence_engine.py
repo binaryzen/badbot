@@ -227,6 +227,11 @@ class SequenceEngine:
                 break
             self._execute_step(step)
 
+        # Record whether the probe reached its terminal state on its own
+        # (outcome="completed") or was halted mid-path (outcome="blocked")
+        # — see Session.outcome for why this distinction matters downstream.
+        self.session.outcome = "completed" if self.state == "completed" else "blocked"
+
     def _send_request(self, step: StepDef, url: str, headers: dict, body: dict | None):
         """Issue a single HTTP request. Returns response or raises on network error."""
         with httpx.Client() as client:
