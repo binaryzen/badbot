@@ -380,6 +380,7 @@
     activeSessionId: null,
     currentSession: null,  // full session JSON (or a live run snapshot, same shape)
     currentLogTab: 'findings',
+    logFilterStep: null,   // persisted (not transient) — survives live-poll re-renders
     cy: null,
     _fsmStepNames: null,   // step-name fingerprint of the rendered FSM (for incremental updates)
     liveRunId: null,
@@ -557,6 +558,7 @@
       if (!session || !session.id) return;
       this.currentSession = session;
       this.currentLogTab = 'findings';
+      this.logFilterStep = null;
 
       document.getElementById('detail-title').textContent = session.sequence_name || '—';
       const ts = session.created_at ? new Date(session.created_at).toLocaleString() : '';
@@ -590,6 +592,7 @@
 
       this.showView('detail');
       this.currentLogTab = 'findings';
+      this.logFilterStep = null;
       this._renderLogPanel();
       this._renderFSM(seq.steps || [], [], new Set());
     },
@@ -672,6 +675,7 @@
       this._stopLiveRun();
       this._setSidebarActive(null);
       this.currentLogTab = 'log';
+      this.logFilterStep = null;
       this.liveRunId = runId;
       this._pollRun();
       this.liveTimer = setInterval(() => this._pollRun(), 600);
@@ -717,14 +721,34 @@
 
     // ── Log panel ────────────────────────────────────────────────
 
-    switchLogTab(tab) {
-      this.currentLogTab = tab;
-      document.getElementById('ltab-findings').classList.toggle('active', tab === 'findings');
-      document.getElementById('ltab-log').classList.toggle('active', tab === 'log');
+    _clearLogFilter() {
+      this.logFilterStep = null;
       this._renderLogPanel();
     },
 
-    _renderLogPanel(filterStep) {
+    switchLogTab(tab) {
+      this.currentLogTab = tab;
+      this._renderLogPanel();
+    },
+
+    _renderLogPanel() {
+      // Reads this.logFilterStep rather than taking it as an argument: the live
+      // poll loop re-renders this panel on every tick, and a transient parameter
+      // would be lost on the next call — the filter would flash and revert a
+      // few hundred ms after clicking an FSM node. Persisting it on `this`
+      // keeps the filtered view stable across re-renders from any source.
+      const filterStep = this.logFilterStep;
+
+      // Sync the tab button highlight here too — every code path that changes
+      // currentLogTab (session/sequence load, FSM-node click, live polling)
+      // ends in a call to _renderLogPanel, so this is the one place that's
+      // guaranteed to run whenever the active tab might have changed. Doing it
+      // ad hoc at each call site is how it drifted out of sync in the first
+      // place (content would flip to Findings on a new session, but the Log
+      // tab button stayed visually active).
+      document.getElementById('ltab-findings').classList.toggle('active', this.currentLogTab === 'findings');
+      document.getElementById('ltab-log').classList.toggle('active', this.currentLogTab === 'log');
+
       const el = document.getElementById('log-content');
       const session = this.currentSession;
       if (!session) {
@@ -769,7 +793,7 @@
           return;
         }
         const prefix = filterStep
-          ? `<div style="color:var(--accent);font-size:11px;padding:3px 0 8px;">Filter: step = ${this._esc(filterStep)} <span onclick="App._renderLogPanel()" style="cursor:pointer;color:var(--muted);margin-left:8px;">✕ clear</span></div>`
+          ? `<div style="color:var(--accent);font-size:11px;padding:3px 0 8px;">Filter: step = ${this._esc(filterStep)} <span onclick="App._clearLogFilter()" style="cursor:pointer;color:var(--muted);margin-left:8px;">✕ clear</span></div>`
           : '';
         el.innerHTML = prefix + log.map(e => {
           const ts = e.timestamp ? new Date(e.timestamp).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'}) : '';
@@ -955,11 +979,9 @@
       // Click a step node → filter log to that step
       this.cy.on('tap', 'node[nodeType="step"]', (evt) => {
         if (!this.currentSession) return;
-        const stepName = evt.target.id();
+        this.logFilterStep = evt.target.id();
         this.currentLogTab = 'log';
-        document.getElementById('ltab-findings').classList.remove('active');
-        document.getElementById('ltab-log').classList.add('active');
-        this._renderLogPanel(stepName);
+        this._renderLogPanel();
       });
     },
 
