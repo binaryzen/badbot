@@ -18,11 +18,11 @@ Non-functional requirements expressed as observable, testable statements. Prefix
 
 **AR-007** `[M]` The tool shall be distributable as a pip-installable package with no mandatory build step for the end user.
 
-**AR-008** `[M]` Each component (C-01 through C-14, U-01) shall be testable in isolation using constructor or parameter injection. No component test shall require network access, an external process, or another non-mocked component.
+**AR-008** `[M]` Each component (C-01 through C-15, U-01) shall be testable in isolation using constructor or parameter injection. No component test shall require network access, an external process, or another non-mocked component.
 
 **AR-009** `[M]` All inter-component dependencies shall be expressed as constructor or function parameter injection. No component shall depend on module-level singletons or global mutable state.
 
-**AR-010** `[M]` The core library (C-01 through C-12, U-01) shall have no import dependency on C-13 (Library API) or C-14 (CLI Layer). The dependency graph shall remain strictly top-down.
+**AR-010** `[M]` The core library (C-01 through C-12, C-15, U-01) shall have no import dependency on C-13 (Library API) or C-14 (CLI Layer). The dependency graph shall remain strictly top-down.
 
 **AR-011** `[M]` Session artifacts shall be forward-compatible: a newer tool version shall load an artifact produced by an older version without data loss, applying migration (FR-007) where schema changes require it.
 

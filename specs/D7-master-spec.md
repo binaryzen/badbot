@@ -1,8 +1,8 @@
 # D7 — Master Specification
 
-**Version:** 1.0
+**Version:** 1.1
 **Status:** Authoritative
-**Date:** 2026-03-21
+**Date:** 2026-06-06
 **Source documents:** D1 (User Stories), D2 (Use Cases), D3 (Functional Requirements), D4 (OSS Landscape), D5 (Modularization), D6 (Architectural Requirements & Constraints)
 
 ---
@@ -17,15 +17,16 @@ This document is the single authoritative specification for the tool. It synthes
 
 An interactive, local-only CLI tool for orchestrated ad-hoc networked application vulnerability testing. The tool enables a Domain Engineer — an engineer with solid technical depth but without formal security training — to discover, simulate, and verify security behaviors in their applications at the protocol level.
 
-**Core value proposition:** The tool does what no existing OSS tool does on its own — stateful, context-aware, protocol-aware multi-step workflow execution with guided entry points, progressive disclosure, and reproducible session artifacts.
+**Core value proposition:** The tool does what no existing OSS tool does on its own — stateful, context-aware, protocol-aware multi-step workflow execution with guided entry points, progressive disclosure, and reproducible session artifacts. Test orchestrations are mapped to an ATT&CK-native TTP graph, making the problem space navigable top-down (tactic → technique → sequence) and enabling kill-chain-aware suite composition, technique coverage tracking, and ATT&CK Navigator-compatible output.
 
 **In scope for v1:**
 - HTTP/REST protocol (bundled seed plugin)
 - Local proxy / MITM with TLS provisioning
 - Sequence-based test execution with context extraction
-- Suite execution with parallel/serial modes
+- Suite execution with parallel/serial modes and kill chain composition
+- ATT&CK-native TTP graph with bundled API-security scope; OWASP alias layer for DE vocabulary
 - Session persistence with redaction policy
-- CLI interface with structured JSON output
+- CLI interface with structured JSON output and ATT&CK Navigator layer export
 
 **Out of scope for v1:**
 - Binary protocol testing (architecture supports it; deferred until after plugin model validates)
@@ -214,7 +215,7 @@ Each FR is tagged with the use case(s) it supports.
 
 **FR-067** `[S]` The tool shall accept an OpenAPI specification as a protocol definition input, deriving data structures, field types, parameter constraints, and endpoint patterns from the spec without requiring manual definition authoring. *UC-03*
 
-**FR-068** `[S]` The tool shall use an imported OpenAPI specification as input to test discovery, suggesting test categories and sequence patterns derived from the spec's declared endpoints, parameters, schemas, and security schemes. *UC-01*
+**FR-068** `[S]` The tool shall use an imported OpenAPI specification as input to test discovery, suggesting test categories and sequence patterns derived from the spec's declared endpoints, parameters, schemas, and security schemes. Discovery suggestions shall include ATT&CK technique references and OWASP alias labels resolved from the bundled TTP scope, so that suggested tests are framed in navigable taxonomy terms from the point of discovery. *UC-01*
 
 ### 5.3 Protocol Buffer Rendering
 
@@ -306,7 +307,7 @@ Each FR is tagged with the use case(s) it supports.
 
 **FR-057** `[C]` The tool shall express finding significance in plain-language terms in addition to technical precision when plain-language descriptions are available in the protocol definition's content metadata. *UC-14*
 
-**FR-057a** `[C]` During plugin/module onboarding, the tool shall use an LLM to generate plain-language descriptions for protocol elements and finding types that lack them, storing the generated content in the plugin's metadata for review and correction before use.
+**FR-057a** `[S]` During plugin onboarding, the tool shall invoke an AI-assistable authoring pipeline that generates: plain-language descriptions for protocol elements and finding types that lack them; suggested ATT&CK technique mappings for sequences that lack them (derived from sequence descriptions and the bundled ATT&CK scope); and a structured review artifact presenting all generated content for author acceptance, correction, or rejection before registration. Accepted content is stored in the plugin's metadata. The pipeline degrades gracefully when LLM access is unavailable, skipping generation steps and flagging the gaps without blocking onboarding.
 
 **FR-058** `[C]` The tool shall provide inline plain-language definitions for protocol elements and finding types when present in the plugin's content metadata. *UC-14*
 
@@ -352,6 +353,30 @@ Each FR is tagged with the use case(s) it supports.
 
 **FR-079** `[M]` The tool shall validate plugin interface compliance structurally before loading, and reject any plugin that attempts to register interfaces or hooks beyond those declared in its manifest. *UC-06 (FR-034)*
 
+### 5.11 TTP Graph
+
+**FR-080** `[M]` The tool shall ship with a bundled ATT&CK dataset scoped to API security testing: a curated subset of ATT&CK Enterprise tactics, techniques, and sub-techniques relevant to the HTTP/REST attack surface and the scenarios the tool targets. The dataset shall declare its ATT&CK version and the scope criteria applied. It shall be read-only at runtime and treated as a versioned tool artifact. *(C-15)*
+
+**FR-081** `[S]` The tool shall accept an updated ATT&CK scope bundle, validating it for structural integrity and version compatibility before replacing the active dataset. The prior version shall be retained and restorable. *(C-15)*
+
+**FR-082** `[M]` Plugin sequences shall declare ATT&CK technique mappings in their manifest. Each mapping shall specify: the technique ID, an optional sub-technique ID, an optional OWASP API Security alias, and an optional confidence qualifier (full | partial | adjacent). C-12 shall validate all declared technique IDs against the bundled ATT&CK dataset at plugin onboarding and reject mappings that reference techniques outside the active scope without a scope-extension declaration. *(C-12, C-15)*
+
+**FR-083** `[M]` Plugin sequences may declare a scope extension: a technique ID not in the current bundled scope, with a justification. Scope extensions are recorded in the plugin manifest and presented to the user at onboarding for explicit acceptance. Accepted extensions are additive to the active scope for the duration of the session and persist in the plugin's registered metadata. *(C-12, C-15)*
+
+**FR-084** `[S]` The tool shall accept a kill chain definition as a suite composition input: an ordered list of ATT&CK tactic and technique references representing a multi-stage attack path. When a kill chain is provided, C-09 shall resolve available sequences for each technique from registered plugins and present the resolved plan — including techniques for which no sequence is available — before execution begins. *(C-09, C-15)*
+
+**FR-085** `[S]` After executing a kill chain-defined suite, the tool shall produce a kill chain execution summary: which techniques were exercised (and by which sequences), which were skipped due to prior-step failure, and which had no sequences available. This summary is included in the session artifact and the report. *(C-09, C-11)*
+
+**FR-086** `[M]` Every Finding shall carry the ATT&CK technique IDs and OWASP alias labels mapped to the sequence that produced it, populated from the sequence's declared manifest mappings. No additional user action is required to attach TTP context to findings. *(C-07, C-11)*
+
+**FR-087** `[S]` The tool shall produce an ATT&CK Navigator-compatible coverage layer as an optional report format: a JSON artifact conforming to the ATT&CK Navigator layer schema, highlighting techniques exercised in the session. This artifact is suitable for direct import into ATT&CK Navigator for visual coverage review. *(C-11)*
+
+**FR-088** `[S]` The tool shall include an ATT&CK technique coverage summary in the session's execution coverage report (extends FR-061): techniques exercised, techniques with sequences available but not run, and techniques in active scope with no available sequences. Coverage is expressed as a count and as a fraction of the active scope, not the full ATT&CK enterprise dataset. *(C-11)*
+
+**FR-089** `[M]` The tool shall treat the bundled ATT&CK scope as the authoritative navigable problem space. All test discovery suggestions (FR-068), kill chain resolution (FR-084), and coverage reporting (FR-088) shall be expressed in terms of the active scope. Techniques outside the active scope shall not appear in navigation or coverage output unless introduced by an accepted scope extension (FR-083). *(C-15)*
+
+**FR-090** `[S]` The tool shall provide a plugin authoring scaffold command that generates a structured manifest template and sequence skeleton for a new sequence, given: a natural-language description of the attack behavior to test, the active ATT&CK scope, and the target protocol. The scaffold includes pre-populated fields where they can be inferred (technique mapping candidates, OWASP alias, message structure from protocol definition) and explicit placeholders where behavioral decisions require author judgment (assertions, expected failure conditions, finding severity). The scaffold is the primary entry point for AI-assistable plugin extension: the generated artifact is valid input to the onboarding pipeline (FR-057a) without manual restructuring. *(C-12, C-15)*
+
 ### FR Summary
 
 | Area | Count | Must | Should | Could |
@@ -366,7 +391,8 @@ Each FR is tagged with the use case(s) it supports.
 | Reporting & Output | 13 | 9 | 1 | 3 |
 | Structured Messaging | 4 | 3 | 1 | 0 |
 | Tool Security Posture | 6 | 4 | 2 | 0 |
-| **Total** | **80** | **61** | **16** | **3** |
+| TTP Graph | 11 | 4 | 7 | 0 |
+| **Total** | **91** | **65** | **23** | **3** |
 
 ---
 
@@ -386,11 +412,11 @@ Each FR is tagged with the use case(s) it supports.
 
 **AR-007** `[M]` The tool shall be distributable as a pip-installable package with no mandatory build step for the end user.
 
-**AR-008** `[M]` Each component (C-01 through C-14, U-01) shall be testable in isolation using constructor or parameter injection. No component test shall require network access, an external process, or another non-mocked component.
+**AR-008** `[M]` Each component (C-01 through C-15, U-01) shall be testable in isolation using constructor or parameter injection. No component test shall require network access, an external process, or another non-mocked component.
 
 **AR-009** `[M]` All inter-component dependencies shall be expressed as constructor or function parameter injection. No component shall depend on module-level singletons or global mutable state.
 
-**AR-010** `[M]` The core library (C-01 through C-12, U-01) shall have no import dependency on C-13 (Library API) or C-14 (CLI Layer). The dependency graph shall remain strictly top-down.
+**AR-010** `[M]` The core library (C-01 through C-12, C-15, U-01) shall have no import dependency on C-13 (Library API) or C-14 (CLI Layer). The dependency graph shall remain strictly top-down.
 
 **AR-011** `[M]` Session artifacts shall be forward-compatible: a newer tool version shall load an artifact produced by an older version without data loss, applying migration (FR-007) where schema changes require it.
 
@@ -481,12 +507,13 @@ Each FR is tagged with the use case(s) it supports.
 | C-06 | Buffer Renderer | Dual-view rendering; tshark dissection; field correlation | FR-019, FR-020, FR-021, FR-022, FR-024 |
 | C-07 | Sequence Engine | State machine execution; step advancement; context extraction; log production | FR-025–FR-029, FR-037–FR-045 |
 | C-08 | Proxy Engine | mitmproxy integration; TLS provisioning; traffic capture; interception rules | FR-046–FR-055 |
-| C-09 | Suite Orchestrator | Prefect-based suite execution; parallel/serial; pass/fail; result aggregation | FR-063, FR-064, FR-065, FR-066, FR-069 |
+| C-09 | Suite Orchestrator | Prefect-based suite execution; parallel/serial; pass/fail; kill chain resolution; result aggregation | FR-063, FR-064, FR-065, FR-066, FR-069, FR-084, FR-085 |
 | C-10 | Session Manager | Session lifecycle; artifact serialization/migration; key management; log recording | FR-001–FR-009, FR-074, FR-075, FR-076 |
-| C-11 | Report Generator | Finding aggregation; severity prioritization; multi-level output; JSON emission | FR-056, FR-057, FR-057a, FR-058, FR-059, FR-061 |
-| C-12 | Plugin Manager | Plugin loading; manifest validation; sandboxing; content onboarding | FR-034, FR-072, FR-078, FR-079 |
+| C-11 | Report Generator | Finding aggregation; severity prioritization; TTP coverage summary; ATT&CK Navigator export | FR-056, FR-057, FR-058, FR-059, FR-061, FR-085, FR-087, FR-088 |
+| C-12 | Plugin Manager | Plugin loading; manifest validation; sandboxing; AI-assistable onboarding pipeline; scaffold generation | FR-034, FR-057a, FR-072, FR-078, FR-079, FR-082, FR-083, FR-090 |
 | C-13 | Library API | Public surface; execution log handoff; non-interactive mode detection | FR-009, FR-060, FR-062 |
 | C-14 | CLI Layer | Argument parsing; command routing; output formatting; exit codes | FR-060, FR-062, FR-073 |
+| C-15 | TTP Registry | Bundled ATT&CK scope dataset; technique lookup; OWASP alias resolution; scope extension management | FR-080, FR-081, FR-083, FR-089 |
 | U-01 | NetworkClient (utility) | Shared outbound HTTP/S client with enforced TLS validation | FR-077 |
 
 ### 8.2 URN Addressing Scheme
@@ -495,7 +522,7 @@ All named resources use `urn:badbot:{namespace}:{resource-type}:{id}`.
 
 | Namespace | Scope |
 |---|---|
-| `urn:badbot:c{nn}:…` | Core component resources (c01–c14) |
+| `urn:badbot:c{nn}:…` | Core component resources (c01–c15) |
 | `urn:badbot:u01:…` | Shared utility resources |
 | `urn:badbot:plugin:{name}:…` | Plugin-contributed resources |
 
@@ -509,6 +536,8 @@ All named resources use `urn:badbot:{namespace}:{resource-type}:{id}`.
 | Source/provider types | `src` | `urn:badbot:c05:src:mutation` |
 | Configuration keys | `cfg` | `urn:badbot:c10:cfg:autosave_interval` |
 | Constants | `const` | `urn:badbot:plugin:http-rest:const:default_timeout` |
+| TTP references | `ttp` | `urn:badbot:c15:ttp:T1528`, `urn:badbot:c15:ttp:T1190.001` |
+| Kill chain definitions | `killchain` | `urn:badbot:plugin:http-rest:killchain:auth_bypass` |
 
 `MessageRef` (defined below) is the canonical reference implementation. For parameterized resource types, schemas are owned by the registry — co-located with templates at registration, not carried on the reference. `ContextRef`, `StepRef`, `RegistryID`, and `SourceConfig` keys align to URN addressing progressively as interfaces stabilize. See CON-10.
 
@@ -524,19 +553,61 @@ Emitted by all core components (C-02 through C-10) in place of constructed IMess
 
 **Schema ownership:** The registry owns the param contract. Schemas are registered alongside templates via `C-01.register(urn, template, schema?)` and looked up internally by `C-01.validate(ref)`. Producers carry no schema reference and need not know schemas exist — this is a translation concern between raw params and rendered output, owned entirely by the registry.
 
+### TTPMapping
+```
+TTPMapping
+  technique_id:     str              # ATT&CK technique ID, e.g. "T1528"
+  sub_technique_id: str?             # e.g. "T1528.001"
+  owasp_alias:      str?             # e.g. "API2:2023"
+  confidence:       TTPConfidence    # FULL | PARTIAL | ADJACENT
+```
+Declared in plugin sequence manifests. Validated by C-12 against C-15 at onboarding. Carried on `Finding` at production time without additional authoring.
+
+### KillChainDefinition
+```
+KillChainDefinition
+  id:     URN
+  name:   str
+  steps:  List[KillChainStep]
+
+KillChainStep
+  tactic_id:        str    # ATT&CK tactic ID, e.g. "TA0006"
+  technique_id:     str
+  sub_technique_id: str?
+  required:         bool   # if true, unresolved step halts suite composition
+```
+Optional field on `SuiteDefinition`. When present, C-09 resolves sequences for each step via C-15 before execution and produces `TTPCoverageSummary` after.
+
+### TTPCoverageSummary
+```
+TTPCoverageSummary
+  scope_version:    str                        # ATT&CK version of active scope
+  exercised:        List[TTPRef]               # techniques with at least one executed sequence
+  available:        List[TTPRef]               # techniques with loaded sequences, not run
+  unresolved:       List[TTPRef]               # in-scope techniques with no loaded sequences
+  kill_chain_steps: List[KillChainStepResult]? # present when kill chain was defined
+
+KillChainStepResult
+  step:          KillChainStep
+  status:        StepStatus     # EXERCISED | SKIPPED | UNRESOLVED
+  sequences_run: List[URN]
+```
+Produced by C-11. Included in session artifact and report. Source for `export_navigator_layer()`.
+
 ### Finding
 ```
 Finding
   id:               UUID
-  severity:         Severity   # CRITICAL | HIGH | MEDIUM | LOW | INFO
-  message:          MessageRef # resolved to IMessage at render time by C-11 or C-13
+  severity:         Severity         # CRITICAL | HIGH | MEDIUM | LOW | INFO
+  message:          MessageRef       # resolved to IMessage at render time by C-11 or C-13
   sequence_step:    StepRef
   state:            StateName
   protocol_context: ParseResult
-  evidence_ref:     ContextRef # opaque reference — raw value stays in C-02
+  evidence_ref:     ContextRef       # opaque reference — raw value stays in C-02
+  ttp_refs:         List[TTPMapping] # from sequence manifest; empty list if unmapped
   timestamp:        datetime
 ```
-*Produced by C-07 and C-08. Consumed by C-11 and C-10.*
+*Produced by C-07 and C-08. Consumed by C-11 and C-10. `ttp_refs` populated from the executing sequence's manifest — no separate authoring step at finding production time.*
 
 #### LogEntry
 ```
@@ -667,19 +738,22 @@ signing_key(session: Session) → SigningKey                 # FR-076
 
 #### C-11 — IReportGenerator
 ```
-generate(session: Session) → Report
+generate(session: Session, kill_chain_plan?: KillChainPlan) → Report
+export_navigator_layer(session: Session) → NavigatorLayer
 ```
-`Report` contains `List[Finding]`, each with a `MessageRef` resolved to `IMessage` via `C-01.resolve()` at report generation time. C-11 is one of the four boundary-layer consumers of C-01. C-11 reads findings from the session log — it never calls `C-02.value()`.
+`Report` contains `List[Finding]` and a `TTPCoverageSummary`. Each `Finding` carries `ttp_refs` from the producing sequence's manifest. `MessageRef` objects resolved to `IMessage` via `C-01.resolve()`. C-11 is one of the four boundary-layer consumers of C-01. Depends on C-15 for technique metadata in Navigator export. Never calls `C-02.value()`.
 
 #### C-12 — IPluginManager
 ```
 load(path: PluginPath) → Plugin
 validate(plugin: Plugin) → ValidationResult
-onboard(plugin: Plugin) → OnboardedPlugin    # triggers LLM description generation; FR-057a
+onboard(plugin: Plugin) → OnboardedPlugin    # AI-assistable authoring pipeline; FR-057a, FR-082, FR-083
+                                              # validates TTP IDs against C-15
                                               # registers plugin URN schemas with C-01
+scaffold(description: str, protocol: URN) → PluginScaffold   # FR-090
 sandbox(plugin: Plugin) → SandboxedPlugin
 ```
-C-12 depends on C-01 for URN schema registration during `onboard()` — a write-only dependency (registration only; C-12 never calls `resolve()` or `render()`). Outbound plugin download calls route through U-01 (NetworkClient) for TLS enforcement (FR-077).
+C-12 depends on C-01 (URN schema registration — write-only) and C-15 (TTP validation in `onboard()`; technique keyword search in `scaffold()`). Outbound plugin download calls route through U-01 (NetworkClient) for TLS enforcement (FR-077). `onboard()` invokes LLM if available; degrades gracefully if not — skips generation steps, flags gaps, does not block registration.
 
 #### C-13 — ILibraryAPI
 ```
@@ -698,6 +772,19 @@ C-13 is the execution log handoff coordinator for non-suite paths: after `C-07.e
 
 #### C-14 — CLI Layer
 Thin shell over C-13. Responsible for: argument parsing, command routing, exit code emission, suppressing human-readable output in non-interactive mode, and rendering structured JSON messages in pipeline mode.
+
+#### C-15 — ITTPRegistry
+```
+technique(id: str) → TechniqueRef
+techniques_for_tactic(tactic_id: str) → List[TechniqueRef]
+resolve_owasp(alias: str) → List[TechniqueRef]
+search(query: str) → List[TechniqueRef]
+validate_id(id: str) → bool
+scope_version() → str
+active_scope() → List[TechniqueRef]
+register_extension(mapping: TTPMapping, justification: str)
+```
+Read-only at runtime except for `register_extension()`, called by C-12 on author acceptance of a scope extension during onboarding. Leaf component — no internal dependencies. Bundled ATT&CK dataset is a static resource (curated API-security subset of ATT&CK Enterprise, STIX 2.1 JSON format) shipped with the tool.
 
 #### U-01 — NetworkClient (Shared Utility)
 ```
@@ -720,6 +807,7 @@ C-14 CLI Layer
         │     │     └→ [OpenAPI parsers OSS]
         │     ├→ C-12 Plugin Manager
         │     │     ├→ C-01 Message Registry   ← register URN schemas at onboarding only
+        │     │     ├→ C-15 TTP Registry        ← validate technique IDs; scaffold() search
         │     │     └→ [U-01 NetworkClient]
         │     └→ [U-01 NetworkClient]
         ├→ C-06 Buffer Renderer
@@ -743,14 +831,18 @@ C-14 CLI Layer
         ├→ C-09 Suite Orchestrator
         │     ├→ C-07 Sequence Engine
         │     ├→ C-10 Session Manager
+        │     ├→ C-15 TTP Registry        ← kill chain resolution
         │     └→ [Prefect OSS]
         └→ C-11 Report Generator
               ├→ C-01 Message Registry   ← resolves MessageRefs to IMessage at report time
               ├→ C-10 Session Manager
+              ├→ C-15 TTP Registry        ← technique metadata for Navigator export
               └→ C-02 Context Store      (refs only — never calls value())
+
+C-15 TTP Registry   ← leaf; no internal dependencies
 ```
 
-No circular dependencies. C-02 is the infrastructure foundation. C-01 (Message Registry) is a boundary-layer dependency only — core components C-02 through C-10 emit `MessageRef` primitives and carry no C-01 import. C-01 is resolved at C-11 (report generation), C-12 (URN schema registration during plugin onboarding), C-13 (library boundary), and C-14 (CLI rendering). U-01 (NetworkClient) is a leaf with no internal dependencies. Core library (C-01 through C-12, U-01) has no import dependency on C-13 or C-14 — satisfies AR-010.
+No circular dependencies. C-02 is the infrastructure foundation. C-01 (Message Registry) is a boundary-layer dependency only — core components C-02 through C-10 emit `MessageRef` primitives and carry no C-01 import. C-01 is resolved at C-11 (report generation), C-12 (URN schema registration during plugin onboarding), C-13 (library boundary), and C-14 (CLI rendering). C-15 (TTP Registry) is a leaf — consumed by C-09 (kill chain resolution), C-11 (Navigator export), and C-12 (TTP validation and scaffold). U-01 (NetworkClient) is a leaf with no internal dependencies. Core library (C-01 through C-12, C-15, U-01) has no import dependency on C-13 or C-14 — satisfies AR-010.
 
 **Execution log write path:** C-07 and C-08 return log entries and findings in their return types. C-09 and C-13 write these to C-10 via `record()`. Neither C-07 nor C-08 depends on C-10 directly.
 
@@ -773,6 +865,8 @@ No circular dependencies. C-02 is the infrastructure foundation. C-01 (Message R
 | CORScanner | C-05 | Plugin (first-party) | MIT | FR-030, FR-046 |
 | Arjun | C-04 | Subprocess (discovery) | MIT | FR-068 |
 | Dredd | C-03 | Subprocess (optional) | Apache 2.0 | FR-017, FR-018 |
+| MITRE ATT&CK STIX dataset | C-15 | Bundled static resource | CC BY 4.0 | FR-080, FR-081, FR-082, FR-089 |
+| ATT&CK Navigator layer schema | C-11 | JSON schema reference | Apache 2.0 | FR-087 |
 
 **License summary:** No GPL-linked dependencies. All library imports are MIT, Apache 2.0, or MPL-2.0. tshark and Scapy invoked as subprocess only — no copyleft obligation triggered.
 
@@ -893,12 +987,13 @@ Full chain: User Story → Use Case → Functional Requirements → Component(s)
 |---|---|---|
 | D3 | FR-030 (Must) vs FR-034 (Should) — plugin interface timing | CON-05: FR-030 ships with seed plugin; FR-034 ships when v1 published |
 | D3 | Redaction policy model — how aggressive? | Default-redact; 100% trigger prompts user to configure policy; three named modes |
-| D3 | Plain-language descriptions — runtime LLM or static? | Static, precision-first at runtime; LLM generates at plugin onboarding (FR-057a, Could) |
+| D3 | Plain-language descriptions — runtime LLM or static? | Static, precision-first at runtime; LLM generates at plugin onboarding (FR-057a, Should) |
 | D5 | FR-077 (outbound TLS) had no component owner | Added U-01 NetworkClient utility; C-04 and C-12 route through it |
 | D5 | C-03 parse() — singular result for ambiguous buffers | Added `parse_all()` returning `List[ParseResult]`; C-06 presents alternatives |
 | D5 | Execution log write path — C-07 no dependency on C-10 | C-07 returns LogEntry list in ExecutionResult; C-09/C-13 call `C-10.record()` |
-| D5 | Finding data model undefined | Defined `Finding` as named shared type with MessageRef, ContextRef, severity, etc. |
+| D5 | Finding data model undefined | Defined `Finding` as named shared type with MessageRef, ContextRef, severity, ttp_refs, etc. |
 | D5 | C-01 as cross-cutting dependency | Introduced `MessageRef` primitive; C-01 becomes Message Registry; core components emit MessageRef, resolve only at boundary (C-11, C-12, C-13, C-14) |
+| D5 | No TTP taxonomy layer | Added C-15 TTP Registry (leaf, bundled ATT&CK scope); extended Finding with ttp_refs; SuiteDefinition extended with kill chain; C-12 onboarding broadened to AI-assistable authoring pipeline |
 | D6 | CON-08 — interactive UI limitation for DE | Known gap explicitly accepted; CLI serves v1; UI ships after seed plugin |
 
 ---

@@ -6,12 +6,13 @@
 - FR-003/FR-004: Updated for redaction policy model (default-redact, 3 modes, 100% trigger)
 - FR-003a: Added — distinguishes auto-save from user-initiated export
 - FR-057/FR-058: Downgraded from M/S to C — plain-language as plugin content, not runtime rendering
-- FR-057a: Added — LLM-generated plain-language descriptions at plugin onboarding
-- FR-067/FR-068: Added — OpenAPI spec ingestion
+- FR-057a: Updated — broadened from plain-language descriptions to full AI-assistable authoring pipeline (manifest scaffold, TTP mapping suggestions, sequence skeleton)
+- FR-067/FR-068: Added — OpenAPI spec ingestion; FR-068 updated to include ATT&CK technique references in discovery output
 - FR-069: Added — suite orchestration primitives
 - FR-038/FR-039: Updated to reflect typed context store reference model
 - FR-070–FR-073: Added — structured messaging content model
 - FR-074–FR-079: Added — tool security posture
+- FR-080–FR-090: Added — TTP graph (ATT&CK-native taxonomy, kill chain composition, finding enrichment, coverage tracking, AI-assistable extension pathway)
 
 ---
 
@@ -81,7 +82,7 @@
 **FR-067** `[S]` The tool shall accept an OpenAPI specification as a protocol definition input, deriving data structures, field types, parameter constraints, and endpoint patterns from the spec without requiring manual definition authoring.
 *UC-03*
 
-**FR-068** `[S]` The tool shall use an imported OpenAPI specification as input to test discovery, suggesting test categories and sequence patterns derived from the spec's declared endpoints, parameters, schemas, and security schemes.
+**FR-068** `[S]` The tool shall use an imported OpenAPI specification as input to test discovery, suggesting test categories and sequence patterns derived from the spec's declared endpoints, parameters, schemas, and security schemes. Discovery suggestions shall include ATT&CK technique references and OWASP alias labels resolved from the bundled TTP scope, so that suggested tests are framed in navigable taxonomy terms from the point of discovery.
 *UC-01*
 
 ---
@@ -225,8 +226,8 @@
 **FR-057** `[C]` The tool shall express finding significance in plain-language terms in addition to technical precision when plain-language descriptions are available in the protocol definition's content metadata.
 *UC-14*
 
-**FR-057a** `[C]` During plugin/module onboarding, the tool shall use an LLM to generate plain-language descriptions for protocol elements and finding types that lack them, storing the generated content in the plugin's metadata for review and correction before use.
-*(Plugin onboarding pipeline — D5)*
+**FR-057a** `[S]` During plugin onboarding, the tool shall invoke an AI-assistable authoring pipeline that generates: plain-language descriptions for protocol elements and finding types that lack them; suggested ATT&CK technique mappings for sequences that lack them (derived from sequence descriptions and the bundled ATT&CK scope); and a structured review artifact presenting all generated content for author acceptance, correction, or rejection before registration. Accepted content is stored in the plugin's metadata. The pipeline degrades gracefully when LLM access is unavailable, skipping generation steps and flagging the gaps without blocking onboarding.
+*(Plugin onboarding pipeline — D5, C-12)*
 
 **FR-058** `[C]` The tool shall provide inline plain-language definitions for protocol elements and finding types when present in the plugin's content metadata.
 *UC-14*
@@ -298,6 +299,43 @@
 
 ---
 
+## TTP Graph
+
+**FR-080** `[M]` The tool shall ship with a bundled ATT&CK dataset scoped to API security testing: a curated subset of ATT&CK Enterprise tactics, techniques, and sub-techniques relevant to the HTTP/REST attack surface and the scenarios the tool targets. The dataset shall declare its ATT&CK version and the scope criteria applied. It shall be read-only at runtime and treated as a versioned tool artifact.
+*(C-15)*
+
+**FR-081** `[S]` The tool shall accept an updated ATT&CK scope bundle, validating it for structural integrity and version compatibility before replacing the active dataset. The prior version shall be retained and restorable.
+*(C-15)*
+
+**FR-082** `[M]` Plugin sequences shall declare ATT&CK technique mappings in their manifest. Each mapping shall specify: the technique ID, an optional sub-technique ID, an optional OWASP API Security alias, and an optional confidence qualifier (full | partial | adjacent). C-12 shall validate all declared technique IDs against the bundled ATT&CK dataset at plugin onboarding and reject mappings that reference techniques outside the active scope without a scope-extension declaration.
+*(C-12, C-15)*
+
+**FR-083** `[M]` Plugin sequences may declare a scope extension: a technique ID that is not in the current bundled scope, with a justification. Scope extensions are recorded in the plugin manifest and presented to the user at onboarding for explicit acceptance. Accepted extensions are additive to the active scope for the duration of the session and persist in the plugin's registered metadata.
+*(C-12, C-15)*
+
+**FR-084** `[S]` The tool shall accept a kill chain definition as a suite composition input: an ordered list of ATT&CK tactic and technique references representing a multi-stage attack path. When a kill chain is provided, C-09 shall resolve available sequences for each technique from registered plugins and present the resolved plan — including techniques for which no sequence is available — before execution begins.
+*(C-09, C-15)*
+
+**FR-085** `[S]` After executing a kill chain-defined suite, the tool shall produce a kill chain execution summary: which techniques were exercised (and by which sequences), which were skipped due to prior-step failure, and which had no sequences available. This summary is included in the session artifact and the report.
+*(C-09, C-11)*
+
+**FR-086** `[M]` Every Finding shall carry the ATT&CK technique IDs and OWASP alias labels mapped to the sequence that produced it, populated from the sequence's declared manifest mappings. No additional user action is required to attach TTP context to findings.
+*(C-07, C-11)*
+
+**FR-087** `[S]` The tool shall produce an ATT&CK Navigator-compatible coverage layer as an optional report format: a JSON artifact conforming to the ATT&CK Navigator layer schema, highlighting techniques exercised in the session. This artifact is suitable for direct import into ATT&CK Navigator for visual coverage review.
+*(C-11)*
+
+**FR-088** `[S]` The tool shall include an ATT&CK technique coverage summary in the session's execution coverage report (extends FR-061): techniques exercised, techniques with sequences available but not run, and techniques in active scope with no available sequences. Coverage is expressed as a count and as a fraction of the active scope, not the full ATT&CK enterprise dataset.
+*(C-11)*
+
+**FR-089** `[M]` The tool shall treat the bundled ATT&CK scope as the authoritative navigable problem space. All test discovery suggestions (FR-068), kill chain resolution (FR-084), and coverage reporting (FR-088) shall be expressed in terms of the active scope. Techniques outside the active scope shall not appear in navigation or coverage output unless introduced by an accepted scope extension (FR-083).
+*(C-15)*
+
+**FR-090** `[S]` The tool shall provide a plugin authoring scaffold command that generates a structured manifest template and sequence skeleton for a new sequence, given: a natural-language description of the attack behavior to test, the active ATT&CK scope, and the target protocol. The scaffold includes pre-populated fields where they can be inferred (technique mapping candidates, OWASP alias, message structure from protocol definition) and explicit placeholders where behavioral decisions require author judgment (assertions, expected failure conditions, finding severity). The scaffold is the primary entry point for AI-assistable plugin extension: the generated artifact is valid input to the onboarding pipeline (FR-057a) without manual restructuring.
+*(C-12, C-15)*
+
+---
+
 ## Summary
 
 | Area | Count | Must | Should | Could |
@@ -312,7 +350,8 @@
 | Reporting & Output | 13 | 9 | 1 | 3 |
 | Structured Messaging | 4 | 3 | 1 | 0 |
 | Tool Security Posture | 6 | 4 | 2 | 0 |
-| **Total** | **80** | **61** | **16** | **3** |
+| TTP Graph | 11 | 4 | 7 | 0 |
+| **Total** | **91** | **65** | **23** | **3** |
 
 ---
 
