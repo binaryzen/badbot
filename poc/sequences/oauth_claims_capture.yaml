@@ -6,6 +6,14 @@ description: >
   with a reader-scoped token — the server validates the token but does not
   enforce role requirements, so the probe succeeds when it should be rejected.
 
+ttp_mappings:
+  - technique_id: T1528
+    owasp_alias: "API2:2023"
+    confidence: partial   # token is legitimately obtained; technique covers analysis and reuse
+  - technique_id: T1548
+    owasp_alias: "API5:2023"
+    confidence: full      # reader-scoped token used to access admin function
+
 steps:
   - name: authenticate
     method: POST

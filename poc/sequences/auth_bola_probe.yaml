@@ -4,6 +4,11 @@ description: >
   using alice's token. Expects a 403 on the cross-user request. A 200 response
   indicates a BOLA vulnerability — authorization is not enforcing ownership.
 
+ttp_mappings:
+  - technique_id: T1078
+    owasp_alias: "API1:2023"
+    confidence: full
+
 steps:
   - name: authenticate
     method: POST

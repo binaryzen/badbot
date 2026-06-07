@@ -35,6 +35,7 @@ class Finding:
     message: MessageRef                # opaque — no raw values
     step: str | None = None
     state: str | None = None
+    ttp_refs: list = field(default_factory=list)   # list[TTPMappingDef]; populated from sequence manifest
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 

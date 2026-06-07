@@ -5,6 +5,12 @@ description: >
   Too Many Requests after some threshold. If no 429 is observed across all
   iterations, rate limiting is not enforced.
 
+ttp_mappings:
+  - technique_id: T1499
+    sub_technique_id: "002"
+    owasp_alias: "API4:2023"
+    confidence: partial   # probing absence of defense, not executing a sustained flood
+
 steps:
   - name: authenticate
     method: POST

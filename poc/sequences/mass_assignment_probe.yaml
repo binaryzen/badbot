@@ -5,6 +5,12 @@ description: >
   assert that the effective_price was not overridden. A match indicates the
   server accepted a client-supplied value for a server-controlled field.
 
+ttp_mappings:
+  - technique_id: T1565
+    sub_technique_id: "001"
+    owasp_alias: "API3:2023"
+    confidence: full
+
 steps:
   - name: authenticate
     method: POST

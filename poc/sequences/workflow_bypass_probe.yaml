@@ -7,6 +7,11 @@ description: >
   Step routing uses on_status for conditional branching; for_each iterates
   over probe amounts to find the server's minimum-payment enforcement boundary.
 
+ttp_mappings:
+  - technique_id: T1190
+    owasp_alias: "API6:2023"
+    confidence: full
+
 steps:
   - name: authenticate
     method: POST

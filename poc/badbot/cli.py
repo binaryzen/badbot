@@ -30,7 +30,7 @@ import yaml
 
 from .messages import render, render_token
 from .output import decrypt_session, encrypt_session, render_finding_dict, render_token_dict
-from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, ForEachDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef
+from .sequence_engine import BodyAssertionDef, ExtractionDef, FindingDef, ForEachDef, LoopFindingDef, SequenceDef, SequenceEngine, StepDef, TTPMappingDef
 from .session import Session
 
 
@@ -105,7 +105,17 @@ def load_sequence(path: str) -> SequenceDef:
             for_each=for_each,
         ))
 
-    return SequenceDef(name=data["name"], description=data["description"], steps=steps)
+    ttp_mappings = [
+        TTPMappingDef(
+            technique_id=m["technique_id"],
+            sub_technique_id=m.get("sub_technique_id"),
+            owasp_alias=m.get("owasp_alias"),
+            confidence=m.get("confidence", "full"),
+        )
+        for m in data.get("ttp_mappings", [])
+    ]
+
+    return SequenceDef(name=data["name"], description=data["description"], steps=steps, ttp_mappings=ttp_mappings)
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +165,18 @@ def cmd_run(args: argparse.Namespace) -> None:
         for finding in session.findings:
             rendered = render(finding.message, session.context)
             print(f"  [{finding.severity}] {rendered['summary']}")
+            if finding.ttp_refs:
+                tags = []
+                for m in finding.ttp_refs:
+                    tag = m.technique_id
+                    if m.sub_technique_id:
+                        tag += f".{m.sub_technique_id}"
+                    if m.owasp_alias:
+                        tag += f" · {m.owasp_alias}"
+                    if m.confidence != "full":
+                        tag += f" ({m.confidence})"
+                    tags.append(tag)
+                print(f"           TTP: {' | '.join(tags)}")
             print(f"           {rendered['detail']}")
         session.close()
         sys.exit(1)

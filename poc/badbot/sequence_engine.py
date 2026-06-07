@@ -68,6 +68,14 @@ class ForEachDef:
 
 
 @dataclass
+class TTPMappingDef:
+    technique_id: str
+    sub_technique_id: str | None = None
+    owasp_alias: str | None = None
+    confidence: str = "full"   # full | partial | adjacent
+
+
+@dataclass
 class StepDef:
     name: str
     method: str
@@ -91,6 +99,7 @@ class SequenceDef:
     name: str
     description: str
     steps: list[StepDef]
+    ttp_mappings: list[TTPMappingDef] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +312,7 @@ class SequenceEngine:
                             message=MessageRef.build(urn=fd.urn, params=params),
                             step=step.name,
                             state=self.state,
+                            ttp_refs=self.sequence.ttp_mappings,
                         ))
 
                 # on_status routing per iteration — first match exits the loop
@@ -365,6 +375,7 @@ class SequenceEngine:
                         message=MessageRef.build(urn=fd.urn, params={}),
                         step=step.name,
                         state=self.state,
+                        ttp_refs=self.sequence.ttp_mappings,
                     ))
         else:
             # ------------------------------------------------------------------
@@ -471,6 +482,7 @@ class SequenceEngine:
                                 message=MessageRef.build(urn=fd.urn, params=params),
                                 step=step.name,
                                 state=self.state,
+                                ttp_refs=self.sequence.ttp_mappings,
                             ))
 
         # Finding check — builds MessageRef with ContextRef handles, no raw values read
@@ -486,6 +498,7 @@ class SequenceEngine:
                     message=MessageRef.build(urn=fd.urn, params=params),
                     step=step.name,
                     state=self.state,
+                    ttp_refs=self.sequence.ttp_mappings,
                 ))
 
         # State transition — on_status checked first, on_success as fallback
